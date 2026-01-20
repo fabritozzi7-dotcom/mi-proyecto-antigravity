@@ -143,13 +143,16 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
              
         text = response.text
         
-        # Robust JSON extraction using Regex
-        json_match = re.search(r'\{(?:[^{}]|(?R))*\}', text, re.DOTALL)
+        # Robust JSON extraction using Regex (Simple block finder compatible with Python 're')
+        json_match = re.search(r'(\{.*\})', text, re.DOTALL)
         if json_match:
-            json_text = json_match.group(0)
-            return json.loads(json_text)
+            try:
+                json_text = json_match.group(1)
+                return json.loads(json_text)
+            except:
+                pass
         
-        # Fallback to old simple strip
+        # Fallback to manual stripping if regex fails or JSON is malformed
         text = text.replace("```json", "").replace("```", "").strip()
         if not text:
              return "Error: No se encontró JSON en la respuesta de la IA."
