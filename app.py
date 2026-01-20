@@ -52,8 +52,8 @@ def configure_genai():
 def scan_receipt(image_bytes, mime_type="image/jpeg"):
     import re
     try:
-        # Use a stable model name
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Based on check, 2.0-flash is available and supports generateContent
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
         prompt = """
         # ROL
