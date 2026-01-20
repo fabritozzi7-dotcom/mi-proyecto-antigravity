@@ -119,11 +119,15 @@ def sync_data_from_sheets():
     """
     client = get_gsheets_client()
     if not client:
-        return False, "No Client"
+        return False, "No se pudieron generar credenciales de Google (Verifique Secretos)"
 
     try:
-        # Example: Open by name. You should configure this key in .env or secrets
+        # Priority: st.secrets > os.environ > Default
         sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
+        try:
+            if "GSHEET_NAME" in st.secrets:
+                sheet_name = st.secrets["GSHEET_NAME"]
+        except: pass
         sh = client.open(sheet_name)
         
         # 1. DB_PARAMETROS -> Update CONCEPTOS_DB
@@ -183,7 +187,7 @@ def sync_data_from_sheets():
                             
             logger.info("Synced CONCEPTOS_DB from Sheets")
         except Exception as e:
-            logger.warning(f"Could not sync DB_PARAMETROS: {e}")
+            logger.warning(f"Could not sync DB_PARAMETROS: {type(e).__name__}: {e}")
 
         # 2. DB_PROVEEDORES -> Update PROVEEDORES_DB
         try:
@@ -221,9 +225,12 @@ def sync_data_from_sheets():
 
         return True, "Sync OK"
 
+    except gspread.exceptions.SpreadsheetNotFound:
+        return False, f"SpreadsheetNotFound: Planilla '{sheet_name}' no encontrada."
     except Exception as e:
-        logger.error(f"GSheets Sync Error: {e}")
-        return False, str(e)
+        err_msg = f"{type(e).__name__}: {str(e)}"
+        logger.error(f"GSheets Sync Error: {err_msg}")
+        return False, err_msg
 
 # ... (existing imports)
 
