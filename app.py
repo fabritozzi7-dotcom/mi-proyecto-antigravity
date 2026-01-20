@@ -54,26 +54,71 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         model = genai.GenerativeModel('gemini-2.5-flash')
         
         prompt = """
-        Analiza este comprobante de gasto. Presta MUCHA atención a los detalles pequeños en la cabecera.
+        # ROL
+        Actúas como un **Auditor Contable Senior experto en normativa AFIP (Argentina)**. Tu objetivo es extraer datos estructurados de comprobantes de gastos para un sistema de rendición automatizado. Tu prioridad es la precisión matemática y la correcta categorización impositiva según el TIPO de comprobante.
 
-        INSTRUCCIONES ESPECÍFICAS PARA 'CODIGO AFIP':
-        1. Busca la letra grande que identifica al comprobante (A, B, C, M).
-        2. DENTRO de ese recuadro con la letra, o justo DEBAJO, busca un texto pequeño que diga "COD. XX" (ej: COD. 06).
-        3. Si no está en el recuadro, busca arriba a la derecha frases como "Codigo N° 001" o "Cod. 011".
-        4. Extrae solo el número y normalízalo a 3 dígitos (ej: 06 -> "006").
+        # REGLAS DE NEGOCIO (ESTRICTAS)
 
-        Extrae la siguiente información en formato JSON estricto:
+        ## 1. DETECCIÓN DE TIPO DE COMPROBANTE
+        Lo primero que debes hacer es identificar la LETRA del comprobante (A, B, C, M).
+        - **Si es "A" o "M":** Ejecuta la lógica de "Responsable Inscripto".
+        - **Si es "B" o "C":** Ejecuta la lógica de "Consumidor Final / Monotributo".
+        
+        ## IMPORTANTE: CODIGO AFIP
+        Busca cerca de la letra o arriba a la derecha el "COD. XX" (ej: 001, 006). Normalízalo a 3 dígitos si es necesario.
+
+        ## 2. LÓGICA PARA FACTURA TIPO "A" (Discriminación Obligatoria)
+        Debes desglosar cada centavo del ticket.
+        - **Neto Gravado:** Identifica la base imponible sobre la que se calcula el IVA.
+        - **IVA (Tasas):** Identifica y separa los montos por tasa.
+            - Si el ticket NO explicita el % (ej. solo dice "IVA $210"), CALCULA la tasa: `(Monto IVA / Neto Gravado)`.
+            - Resultado ~0.21 -> Asignar a **IVA 21%**.
+            - Resultado ~0.105 -> Asignar a **IVA 10.5%**.
+            - Resultado ~0.27 -> Asignar a **IVA 27%**.
+        - **Percepciones:**
+            - **Ganancias:** Busca "Perc. Ganancias" o similar.
+            - **IIBB:** Busca "Perc. IIBB" o "Ingresos Brutos".
+            - **Jurisdicción:** Si hay IIBB, extrae el código de jurisdicción (ej: CABA/Capital = CF, Buenos Aires = BA, Córdoba = CD, Santa Fe = SF).
+        - **No Gravado:** Suma aquí conceptos exentos, impuestos internos (combustibles, cigarrillos), tasas municipales o percepciones no categorizadas.
+
+        ## 3. LÓGICA PARA FACTURA TIPO "B" o "C" (Agrupación Total)
+        Esta es una regla de oro: **NUNCA DISCRIMINES IMPUESTOS EN FACTURAS B O C**.
+        - Aunque el ticket diga "IVA Incluido: $XXX", **IGNÓRALO**.
+        - Toma el **Monto Total** del comprobante.
+        - Asigna el **100% del valor** al campo **"No Gravado"** (Columna R).
+        - Los campos de IVA, Neto Gravado y Percepciones DEBEN ser 0.00.
+
+        ## 4. VALIDACIÓN DE INTEGRIDAD MATEMÁTICA
+        Antes de finalizar, realiza la siguiente suma de control internamente:
+        `SUMA = (No Gravado + Neto Gravado + IVA 21 + IVA 10.5 + IVA 27 + Perc. Gcias + Perc. IIBB)`
+
+        - La `SUMA` debe ser **EXACTAMENTE IGUAL** al **Monto Total**.
+        - Si existe una diferencia menor a $0.05 (centavos) por redondeo, ajusta el campo "No Gravado" para que la suma cuadre perfectamente con el Total.
+
+        # FORMATO DE SALIDA (JSON)
+        Devuelve ÚNICAMENTE un objeto JSON con esta estructura exacta para mapear al Google Sheet:
+
         {
-            "cuit": "CUIT proveedor (solo números)",
-            "proveedor": "Razon Social",
-            "monto_total": 0.00,
-            "tipo_factura": "Letra (A, B, C, M)",
-            "sucursal": "Punto de venta (5 digitos)",
-            "numero_comprobante": "Numero (8 digitos)",
-            "monto_neto_gravado": 0.00 (Si es A, el neto. Si es B, igual al total o imputado),
-            "codigo_afip": "001, 006, 011, etc. (segun instrucciones arriba)"
+          "tipo_factura": "String (A, B, C, TICKET)",
+          "codigo_afip": "String (001, 006, etc) o null", 
+          "fecha": "DD/MM/AAAA",
+          "proveedor": "String (Nombre de fantasía o Razón Social)",
+          "cuit": "String (Solo números, sin guiones)",
+          "sucursal": "Punto de venta (5 digitos)",
+          "numero_comprobante": "Numero (8 digitos)",
+          "monto_total_columna_Y": Number (Float, el total a pagar),
+          "desglose": {
+            "columna_R_no_gravado": Number (Float. Si es B/C aquí va el TOTAL. Si es A, van exentos/imp internos),
+            "columna_S_iva_21": Number (Float),
+            "columna_T_iva_105": Number (Float),
+            "columna_U_iva_27": Number (Float),
+            "columna_V_perc_ganancias": Number (Float),
+            "columna_W_perc_iibb": Number (Float),
+            "columna_X_jurisdiccion_code": "String (ej: CF, BA, CD) o null",
+            "neto_gravado_aux": Number (Float, aunque no se pide explícito en columnas R-X, es necesario para cálculos (Col Q))
+          },
+          "validacion_check": "String (OK si la suma cuadra, ERROR si no)"
         }
-        Si no encuentras algún dato, usa null.
         """
         
         image_parts = [{"mime_type": mime_type, "data": image_bytes}]
@@ -206,24 +251,42 @@ if "scanned_data" in st.session_state and final_image_bytes:
         st.subheader("🔍 Datos del Ticket")
         
         data_ia = st.session_state.scanned_data
+        
+        # --- PARSING AND RESTORING DEFAULTS ---
         default_cuit = str(data_ia.get("cuit") or "")
         default_provider = str(data_ia.get("proveedor") or "")
         default_tipo = str(data_ia.get("tipo_factura") or "C").upper().strip()
         default_suc = str(data_ia.get("sucursal") or "").replace("-","")
         default_num = str(data_ia.get("numero_comprobante") or "").replace("-","")
         default_afip = str(data_ia.get("codigo_afip") or "")
-        
+
+        # New Auditor Fields
         try:
-            monto_ticket_total = float(data_ia.get("monto_total") or 0.0)
-            monto_neto = float(data_ia.get("monto_neto_gravado") or 0.0)
-        except:
+            monto_ticket_total = float(data_ia.get("monto_total_columna_Y") or 0.0)
+            
+            # Extract Desglose
+            desglose = data_ia.get("desglose", {})
+            st.session_state.desglose_data = desglose # Store for payload
+            
+            # Helper for imputation base
+            monto_neto_aux = float(desglose.get("neto_gravado_aux") or 0.0)
+             
+            # Validation Check
+            val_check = data_ia.get("validacion_check", "N/A")
+            if val_check != "OK":
+                st.warning(f"⚠️ Alerta Auditoría: {val_check}")
+            else:
+                st.info("✅ Auditoría: Suma de control OK")
+                
+        except Exception as e:
+            st.error(f"Error parsing AI data: {e}")
             monto_ticket_total = 0.0
-            monto_neto = 0.0
+            monto_neto_aux = 0.0
             
         # Factura A Rule: Use Net Amount for Imputation Base
-        if default_tipo == "A" and monto_neto > 0:
-            base_imputacion = monto_neto
-            st.info(f"ℹ️ Factura A detectada: Base de imputación sugerida ${monto_neto:,.2f} (Neto)")
+        if default_tipo == "A" and monto_neto_aux > 0:
+            base_imputacion = monto_neto_aux
+            st.info(f"ℹ️ Factura A detectada: Base de imputación sugerida ${monto_neto_aux:,.2f} (Neto)")
         else:
             base_imputacion = monto_ticket_total
         
@@ -374,11 +437,15 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
             # Provider
             "proveedor_validado_txt": prov_valid_txt,
             "proveedor_cuit": cuit_input,
+            "proveedor_nombre": provider_input,
             
             # Financials
             "monto_gravado_calculado": monto_gravado_final,
             "monto_ticket_total": monto_ticket_total,
-            "monto_a_imputar": monto_imputar
+            "monto_a_imputar": monto_imputar,
+            
+            # Auditor Breakdown (New Strict Logic)
+            "auditor_desglose": st.session_state.get("desglose_data", {})
         }
         
         # 1. Upload to Drive (if file exists)
