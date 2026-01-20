@@ -50,8 +50,10 @@ def configure_genai():
     return False
 
 def scan_receipt(image_bytes, mime_type="image/jpeg"):
+    import re
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        # Use a stable model name
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = """
         # ROL
@@ -132,11 +134,26 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         
         image_parts = [{"mime_type": mime_type, "data": image_bytes}]
         response = model.generate_content([prompt, image_parts[0]])
+        
+        if not response or not response.text:
+             # Check for safety blocks if text is empty
+             if response and response.candidates and response.candidates[0].finish_reason:
+                  return f"Error: La IA bloqueó la respuesta (Razón: {response.candidates[0].finish_reason})"
+             return "Error: La IA devolvió una respuesta vacía."
+             
         text = response.text
         
-        if "```json" in text:
-            text = text.replace("```json", "").replace("```", "")
+        # Robust JSON extraction using Regex
+        json_match = re.search(r'\{(?:[^{}]|(?R))*\}', text, re.DOTALL)
+        if json_match:
+            json_text = json_match.group(0)
+            return json.loads(json_text)
         
+        # Fallback to old simple strip
+        text = text.replace("```json", "").replace("```", "").strip()
+        if not text:
+             return "Error: No se encontró JSON en la respuesta de la IA."
+             
         return json.loads(text)
     except Exception as e:
         return f"Error details: {str(e)}"

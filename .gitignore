@@ -7,3 +7,5 @@ __pycache__/
 .streamlit/secrets.toml
 venv/
 .DS_Store
+
+secrets_deploy.txt
