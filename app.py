@@ -26,9 +26,9 @@ if "data_synced" not in st.session_state:
         if success:
             st.toast("✅ Parámetros actualizados desde Google Sheets")
         else:
-            # Silent fail or toast warning - app continues with fallback
-            if msg != "No Client":
-                st.toast(f"⚠️ Modo Offline: Uso de datos locales ({msg})")
+            sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
+            st.error(f"⚠️ Error de Sincronización (Modo Offline): No se pudo abrir '{sheet_name}'. Detalles: {msg}")
+            st.info("💡 Verifique que la planilla esté compartida con el email de la Service Account y que los Secretos en Streamlit Cloud sean correctos.")
     st.session_state.data_synced = True
 
 def configure_genai():
