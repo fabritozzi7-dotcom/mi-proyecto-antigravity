@@ -78,8 +78,17 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         - **Percepciones:**
             - **Ganancias:** Busca "Perc. Ganancias" o similar.
             - **IIBB:** Busca "Perc. IIBB" o "Ingresos Brutos".
-            - **Jurisdicción:** Si hay IIBB, extrae el código de jurisdicción (ej: CABA/Capital = CF, Buenos Aires = BA, Córdoba = CD, Santa Fe = SF).
         - **No Gravado:** Suma aquí conceptos exentos, impuestos internos (combustibles, cigarrillos), tasas municipales o percepciones no categorizadas.
+
+        ## IMPORTANTE: JURISDICCIÓN (GLOBAL)
+        Independientemente del tipo de factura (A, B, C), busca SIEMPRE la provincia en el domicilio del emisor (ej: "Mendoza", "CABA", "Córdoba") o en las percepciones de IIBB.
+        - Asigna el código correspondiente en `columna_X_jurisdiccion_code`:
+          - CABA/Capital Federal -> "CF"
+          - Buenos Aires -> "BA"
+          - Córdoba -> "CD"
+          - Santa Fe -> "SF"
+          - Mendoza -> "MZ"
+          - (Usa el código de 2 letras estándar si detectas otra provincia)
 
         ## 3. LÓGICA PARA FACTURA TIPO "B" o "C" (Agrupación Total)
         Esta es una regla de oro: **NUNCA DISCRIMINES IMPUESTOS EN FACTURAS B O C**.

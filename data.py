@@ -84,7 +84,11 @@ import io
 
 # ... (existing imports)
 
-SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+# Scopes must match exactly what was requested in setup_auth.py
+SCOPE = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.file"
+]
 
 def get_creds():
     """Helper to get credentials for both Sheets and Drive"""
