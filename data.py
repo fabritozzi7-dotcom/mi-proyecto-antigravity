@@ -123,12 +123,25 @@ def sync_data_from_sheets():
 
     try:
         # Priority: st.secrets > os.environ > Default
+        sheet_id = os.getenv("GSHEET_ID")
         sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
+        
         try:
+            if "GSHEET_ID" in st.secrets:
+                sheet_id = st.secrets["GSHEET_ID"]
             if "GSHEET_NAME" in st.secrets:
                 sheet_name = st.secrets["GSHEET_NAME"]
         except: pass
-        sh = client.open(sheet_name)
+
+        if sheet_id:
+             try:
+                 sh = client.open_by_key(sheet_id)
+                 logger.info(f"Opened sheet by ID: {sheet_id}")
+             except Exception as e:
+                 return False, f"Error abriendo por ID '{sheet_id}': {e}"
+        else:
+             sh = client.open(sheet_name)
+             logger.info(f"Opened sheet by name: {sheet_name}")
         
         # 1. DB_PARAMETROS -> Update CONCEPTOS_DB
         try:
@@ -306,7 +319,20 @@ def find_available_invoice_balance(cuit_provider, amount_needed):
         client = get_gsheets_client()
         if not client: return None
         
-        sh = client.open(os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES"))
+        sheet_id = os.getenv("GSHEET_ID")
+        sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
+        try:
+            if "GSHEET_ID" in st.secrets:
+                sheet_id = st.secrets["GSHEET_ID"]
+            if "GSHEET_NAME" in st.secrets:
+                sheet_name = st.secrets["GSHEET_NAME"]
+        except: pass
+
+        if sheet_id:
+            sh = client.open_by_key(sheet_id)
+        else:
+            sh = client.open(sheet_name)
+            
         ws = sh.worksheet("CONTROL_SALDOS")
         
         rows = ws.get_all_records() # Expects headers in row 1
@@ -347,8 +373,20 @@ def log_rendicion_to_sheet(payload, ticket_url=""):
         return False
         
     try:
+        sheet_id = os.getenv("GSHEET_ID")
         sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
-        sh = client.open(sheet_name)
+        try:
+            if "GSHEET_ID" in st.secrets:
+                sheet_id = st.secrets["GSHEET_ID"]
+            if "GSHEET_NAME" in st.secrets:
+                sheet_name = st.secrets["GSHEET_NAME"]
+        except: pass
+
+        if sheet_id:
+            sh = client.open_by_key(sheet_id)
+        else:
+            sh = client.open(sheet_name)
+            
         ws_log = sh.worksheet("RENDICIONES_LOG")
         
         # Mapping payload to columns (22 COLUMNS NOW)
