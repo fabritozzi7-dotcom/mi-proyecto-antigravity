@@ -319,6 +319,11 @@ if "scanned_data" in st.session_state and final_image_bytes:
             st.info(f"ℹ️ Factura A detectada: Base de imputación sugerida ${monto_neto:,.2f} (Neto)")
         else:
             base_imputacion = monto_ticket_total
+
+        # --- KEY METRICS (Always visible if scanned) ---
+        c1, c2 = st.columns(2)
+        c1.metric("CUIT Detectado", default_cuit)
+        c2.metric("Monto Ticket", f"${monto_ticket_total:,.2f}")
         
         # Validation Logic (Gold Rule)
         is_validated = False
@@ -336,10 +341,6 @@ if "scanned_data" in st.session_state and final_image_bytes:
         # Display logic
         if is_validated:
             st.success("✅ Proveedor Validado")
-            
-            c1, c2 = st.columns(2)
-            c1.metric("CUIT", default_cuit)
-            c2.metric("Monto Ticket", f"${monto_ticket_total:,.2f}")
             st.info(f"**Razón Social:** {validated_name}")
             
             cuit_input = default_cuit
