@@ -108,18 +108,19 @@ def get_creds():
 
 def get_gsheets_client():
     creds = get_creds()
+    email = creds.service_account_email if hasattr(creds, 'service_account_email') else "Unknown"
     if creds:
-        return gspread.authorize(creds)
-    return None
+        return gspread.authorize(creds), email
+    return None, "No Credentials"
 
 def sync_data_from_sheets():
     """
     Connects to GSheets and updates CONCEPTOS_DB and PROVEEDORES_DB.
     Expected Sheet Name: 'SISTEMA_RENDICIONES' (or configurable)
     """
-    client = get_gsheets_client()
+    client, email = get_gsheets_client()
     if not client:
-        return False, "No se pudieron generar credenciales de Google (Verifique Secretos)"
+        return False, f"No se pudieron generar credenciales de Google. Email: {email}"
 
     try:
         # Priority: st.secrets > os.environ > Default
@@ -239,9 +240,9 @@ def sync_data_from_sheets():
         return True, "Sync OK"
 
     except gspread.exceptions.SpreadsheetNotFound:
-        return False, f"SpreadsheetNotFound: Planilla '{sheet_name}' no encontrada."
+        return False, f"SpreadsheetNotFound: Planilla ID '{sheet_id if sheet_id else sheet_name}' no encontrada. [Email activo: {email}]"
     except Exception as e:
-        err_msg = f"{type(e).__name__}: {str(e)}"
+        err_msg = f"{type(e).__name__}: {str(e)} [Email activo: {email}]"
         logger.error(f"GSheets Sync Error: {err_msg}")
         return False, err_msg
 
@@ -316,7 +317,7 @@ def find_available_invoice_balance(cuit_provider, amount_needed):
     Returns: dict with invoice data (suc, num, tipo) or None.
     """
     try:
-        client = get_gsheets_client()
+        client, email = get_gsheets_client()
         if not client: return None
         
         sheet_id = os.getenv("GSHEET_ID")
@@ -368,7 +369,7 @@ def log_rendicion_to_sheet(payload, ticket_url=""):
     """
     Appends a new row to RENDICIONES_LOG tab with updated columns.
     """
-    client = get_gsheets_client()
+    client, email = get_gsheets_client()
     if not client:
         return False
         
