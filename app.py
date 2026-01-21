@@ -274,6 +274,7 @@ default_cuit = ""
 default_provider = ""
 default_afip = ""
 monto_ticket_total = 0.0  # What AI sees on the paper
+monto_neto = 0.0
 
 if "scanned_data" in st.session_state and final_image_bytes:
     with st.container(border=True):
@@ -298,7 +299,7 @@ if "scanned_data" in st.session_state and final_image_bytes:
             st.session_state.desglose_data = desglose # Store for payload
             
             # Helper for imputation base
-            monto_neto_aux = float(desglose.get("neto_gravado_aux") or 0.0)
+            monto_neto = float(desglose.get("neto_gravado_aux") or 0.0)
              
             # Validation Check
             val_check = data_ia.get("validacion_check", "N/A")
@@ -310,12 +311,12 @@ if "scanned_data" in st.session_state and final_image_bytes:
         except Exception as e:
             st.error(f"Error parsing AI data: {e}")
             monto_ticket_total = 0.0
-            monto_neto_aux = 0.0
+            monto_neto = 0.0
             
         # Factura A Rule: Use Net Amount for Imputation Base
-        if default_tipo == "A" and monto_neto_aux > 0:
-            base_imputacion = monto_neto_aux
-            st.info(f"ℹ️ Factura A detectada: Base de imputación sugerida ${monto_neto_aux:,.2f} (Neto)")
+        if default_tipo == "A" and monto_neto > 0:
+            base_imputacion = monto_neto
+            st.info(f"ℹ️ Factura A detectada: Base de imputación sugerida ${monto_neto:,.2f} (Neto)")
         else:
             base_imputacion = monto_ticket_total
         
