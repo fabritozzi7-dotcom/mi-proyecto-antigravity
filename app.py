@@ -227,8 +227,6 @@ with st.container(border=True):
         suggested_amount_concept = data.CONCEPTOS_DB.get(selected_concept, 0.0)
     
     # User Input for IMPUTATION (Monto a Imputar)
-    # This is what will be charged to the folder, separate from the receipt total
-    # We use a dynamic key to force update when concept changes
     monto_imputar = st.number_input("💵 Monto a Imputar (Usuario)", 
                                   value=suggested_amount_concept if suggested_amount_concept > 0 else 0.0, 
                                   step=100.0, format="%.2f",
@@ -273,6 +271,10 @@ with st.container(border=True):
                         status.update(label="❌ Error en el escaneo", state="error")
             else:
                 st.error("Error de configuración API Key")
+    
+    # --- MANUAL MODE (Discreet) ---
+    st.markdown("---")
+    modo_manual = st.checkbox("⌨️ Cargar sin comprobante / Corregir", value=False, help="Habilita la carga manual si no tienes un comprobante para escanear.")
 
 # --- VALIDATION RESULT SECTION ---
 
@@ -283,6 +285,9 @@ default_afip = ""
 monto_ticket_total = 0.0  # What AI sees on the paper
 monto_neto = 0.0
 
+monto_neto = 0.0
+
+# Logic: Show AI section if scanned AND (Successful OR Manual Mode is ON for correction)
 if "scanned_data" in st.session_state and final_image_bytes:
     with st.container(border=True):
         st.subheader("🔍 Datos del Ticket")
@@ -332,7 +337,10 @@ if "scanned_data" in st.session_state and final_image_bytes:
         c1.metric("CUIT Detectado", default_cuit if default_cuit else "???")
         c2.metric("Monto Ticket", f"${monto_ticket_total:,.2f}")
         
-        if not default_cuit or monto_ticket_total <= 0:
+        # Determine if we should show manual correction fields
+        scan_incomplete = not default_cuit or monto_ticket_total <= 0
+        
+        if scan_incomplete:
              st.warning("⚠️ **Escaneo Incompleto o Ilegible.** Por favor complete o corrija los datos manualmente.")
 
         # --- CUIT VALIDATION ENGINE (AI + Manual) ---
@@ -389,13 +397,15 @@ if "scanned_data" in st.session_state and final_image_bytes:
             
         afip_code_input = st.text_input("Código AFIP", value=default_afip)
 
-else:
-    # Manual mode defaults
+# --- MANUAL ENTRY FALLBACK (Only if NO scan AND Toggle is ON) ---
+elif modo_manual:
+    # Manual mode defaults (When NO scan exists)
     cuit_input = ""
     provider_input = ""
     afip_code_input = ""
-    # Manual mode defaults
-    st.subheader("⌨️ Carga Manual")
+    monto_ticket_total = 0.0
+    
+    st.subheader("⌨️ Carga Manual (Sin Comprobante)")
     
     col_m1, col_m2 = st.columns([1, 2])
     with col_m1:
@@ -428,19 +438,33 @@ else:
             st.info("Ingrese CUIT para validar")
 
     st.markdown("---")
-    c1, c2, c3 = st.columns(3)
-    with col_m1: # Reuse previous columns or simple select
+    c1, m_c2, m_c3 = st.columns(3)
+    with c1:
         tipo_fact_input = st.selectbox("Tipo", ["A", "B", "C", "M", "Ticket"], index=2, key="manual_tipo")
-    with col_m2:
+    with m_c2:
         pto_vta_input = st.text_input("Sucursal (5)", max_chars=5, key="manual_suc")
-    with c3:
+    with m_c3:
         num_comp_input = st.text_input("Número (8)", max_chars=8, key="manual_num")
+    
+    # Add Monto Total for manual mode
+    monto_ticket_total = st.number_input("Monto Total del Ticket", value=0.0, step=100.0, format="%.2f", key="manual_total")
     
     monto_neto_input = 0.0
     if tipo_fact_input == "A":
         monto_neto_input = st.number_input("Monto Neto Gravado", value=0.0, key="manual_neto")
         
     afip_code_input = st.text_input("Código AFIP", key="manual_afip")
+else:
+    # No scan and Toggle OFF -> Initialize variables to avoid NameError
+    cuit_input = ""
+    provider_input = ""
+    tipo_fact_input = "C"
+    pto_vta_input = ""
+    num_comp_input = ""
+    monto_ticket_total = 0.0
+    monto_neto_input = 0.0
+    afip_code_input = ""
+    provider_status = "none"
 
 
 # --- LOGIC: BALANCES & FLAGS ---
@@ -500,7 +524,23 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
                  else:
                      st.warning("⚠️ No se encontró FACTURA con saldo suficiente en CONTROL_SALDOS. Se guardará como pendiente de conciliación.")
         
-        # Construct Detailed Payload
+        # Auditor Breakdown (New Strict Logic)
+        desglose_final = st.session_state.get("desglose_data", {}).copy()
+        if not desglose_final or modo_manual:
+            # Basic manual breakdown based on type
+            if tipo_fact_input in ["B", "C", "Ticket"]:
+                desglose_final = {
+                    "columna_R_no_gravado": monto_ticket_total,
+                    "monto_total_columna_Y": monto_ticket_total
+                }
+            elif tipo_fact_input == "A":
+                # For manual A, we at least have the total and neto
+                desglose_final = {
+                    "neto_gravado_aux": monto_neto_input,
+                    "monto_total_columna_Y": monto_ticket_total,
+                    "columna_R_no_gravado": monto_ticket_total - monto_neto_input # Approximation
+                }
+        
         payload = {
             "fecha": expense_date.isoformat(),
             "usuario": selected_user,
@@ -528,7 +568,7 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
             "monto_a_imputar": monto_imputar,
             
             # Auditor Breakdown (New Strict Logic)
-            "auditor_desglose": st.session_state.get("desglose_data", {})
+            "auditor_desglose": desglose_final
         }
         
         # 1. Upload to Drive (if file exists)

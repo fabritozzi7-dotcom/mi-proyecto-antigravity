@@ -145,18 +145,23 @@ def sync_data_from_sheets():
                 sheet_name = st.secrets["GSHEET_NAME"]
         except: pass
 
+        logger.info(f"Target Sheet: {sheet_id if sheet_id else sheet_name}")
+
         if sheet_id:
              try:
+                 logger.info("Opening sheet by ID...")
                  sh = client.open_by_key(sheet_id)
                  logger.info(f"Opened sheet by ID: {sheet_id}")
              except Exception as e:
                  return False, f"Error abriendo por ID '{sheet_id}': {e}"
         else:
+             logger.info("Opening sheet by Name...")
              sh = client.open(sheet_name)
              logger.info(f"Opened sheet by name: {sheet_name}")
         
         # 1. DB_PARAMETROS -> Update CONCEPTOS_DB
         try:
+            logger.info("Syncing DB_PARAMETROS...")
             ws_params = sh.worksheet("DB_PARAMETROS")
             rows = ws_params.get_all_values(value_render_option='UNFORMATTED_VALUE')
             
@@ -216,6 +221,7 @@ def sync_data_from_sheets():
 
         # 2. DB_PROVEEDORES -> Update PROVEEDORES_DB
         try:
+            logger.info("Syncing DB_PROVEEDORES...")
             ws_prov = sh.worksheet("DB_PROVEEDORES")
             rows = ws_prov.get_all_values()
             for row in rows[1:]:
@@ -230,6 +236,7 @@ def sync_data_from_sheets():
 
         # 3. DB_CLIENTE -> Update CLIENTES_DB
         try:
+            logger.info("Syncing DB_CLIENTE...")
             ws_cli = sh.worksheet("DB_CLIENTE")
             rows_cli = ws_cli.get_all_values()
             new_clients = []
