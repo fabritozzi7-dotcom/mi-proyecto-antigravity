@@ -232,6 +232,9 @@ with st.container(border=True):
                                   step=100.0, format="%.2f",
                                   help="El monto que desea asignar a esta carpeta. Puede diferir del ticket.",
                                   key=f"monto_imputar_{selected_concept}")
+    
+    # New Field: Observations (Column AD)
+    observaciones = st.text_area("📝 Observaciones (Opcional)", placeholder="Detalles adicionales, número de guía, etc...", height=80)
 
 
 # --- CARD 3: COMPROBANTE & IA ---
@@ -568,7 +571,11 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
             "monto_a_imputar": monto_imputar,
             
             # Auditor Breakdown (New Strict Logic)
-            "auditor_desglose": desglose_final
+            # Auditor Breakdown (New Strict Logic)
+            "auditor_desglose": desglose_final,
+            
+            # Metadata
+            "observaciones": observaciones
         }
         
         # 1. Upload to Drive (if file exists)

@@ -487,7 +487,8 @@ def log_rendicion_to_sheet(payload, ticket_url=""):
             monto_imputar,                              # 26. Monto a Imputar (Manual)
             ticket_url,                                 # 27. Ticket URL
             estado_saldo,                               # 28. Estado (Puchito)
-            clave_unica                                 # 29. Clave Maestra
+            clave_unica,                                # 29. Clave Maestra
+            payload.get("observaciones", "")            # 30. Observaciones (Col AD)
         ]
         
         ws_log.append_row(row)
