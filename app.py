@@ -131,6 +131,12 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
           },
           "validacion_check": "String (OK si la suma cuadra, ERROR si no)"
         }
+
+        ## REGLAS DE SEGURIDAD (LEGIBILIDAD)
+        - **SI EL TICKET ES ILEGIBLE, ESTÁ BORROSO O CORTADO:** No intentes adivinar datos.
+        - Devuelve `null` en los campos que no puedas leer con certeza absoluta (especialmente CUIT y Montos).
+        - El sistema detectará los `null` y pedirá carga manual al usuario.
+        - Prioriza siempre la precisión sobre la inferencia.
         """
         
         image_parts = [{"mime_type": mime_type, "data": image_bytes}]
@@ -323,37 +329,48 @@ if "scanned_data" in st.session_state and final_image_bytes:
 
         # --- KEY METRICS (Always visible if scanned) ---
         c1, c2 = st.columns(2)
-        c1.metric("CUIT Detectado", default_cuit)
+        c1.metric("CUIT Detectado", default_cuit if default_cuit else "???")
         c2.metric("Monto Ticket", f"${monto_ticket_total:,.2f}")
         
-        # Validation Logic (Gold Rule)
+        if not default_cuit or monto_ticket_total <= 0:
+             st.warning("⚠️ **Escaneo Incompleto o Ilegible.** Por favor complete o corrija los datos manualmente.")
+
+        # --- CUIT VALIDATION ENGINE (AI + Manual) ---
+        st.markdown("### Validación de Proveedor")
+        # Use a container to group validation UI
+        v_col1, v_col2 = st.columns([1, 2])
+        
+        with v_col1:
+            # The manual input defaults to what AI found, but allows correction
+            cuit_input = st.text_input("CUIT del Proveedor", value=default_cuit, placeholder="Ej: 30123456789")
+        
+        # Real-time search in DB based on manual OR ai input
         is_validated = False
         validated_name = ""
         
-        if default_cuit:
-            clean_input = default_cuit.replace("-", "").replace(" ", "")
+        if cuit_input:
+            clean_input = cuit_input.replace("-", "").replace(" ", "")
             for db_cuit, db_name in data.PROVEEDORES_DB.items():
-                if db_cuit == default_cuit or db_cuit.replace("-", "") == clean_input:
+                if db_cuit == cuit_input or db_cuit.replace("-", "") == clean_input:
                     is_validated = True
                     validated_name = db_name
-                    default_cuit = db_cuit
+                    # Standardize format
+                    cuit_input = db_cuit
                     break
         
-        # Display logic
-        if is_validated:
-            st.success("✅ Proveedor Validado")
-            st.info(f"**Razón Social:** {validated_name}")
-            
-            cuit_input = default_cuit
-            provider_input = validated_name
-            provider_status = "valid"
-        else:
-            st.warning("⚠️ Proveedor Pendiente de Alta")
-            cuit_input = st.text_input("CUIT", value=default_cuit)
-            provider_input = st.text_input("Razón Social", value=default_provider)
-            provider_status = "pending_approval"
-            
-            provider_status = "pending_approval"
+        provider_status = "none"
+        with v_col2:
+            if is_validated:
+                st.success(f"✅ **Validado:** {validated_name}")
+                provider_input = validated_name
+                provider_status = "valid"
+            elif cuit_input:
+                st.warning("🔍 Proveedor no encontrado (Pendiente de Alta)")
+                provider_input = st.text_input("Razón Social (Manual)", value=default_provider)
+                provider_status = "pending_approval"
+            else:
+                provider_input = ""
+                st.info("Ingrese CUIT para validar")
 
         # Expanded Invoice Details (Fabian's Rules)
         st.markdown("---")
@@ -378,18 +395,52 @@ else:
     provider_input = ""
     afip_code_input = ""
     # Manual mode defaults
-    cuit_input = ""
-    provider_input = ""
-    afip_code_input = ""
-    provider_status = "none"
-    tipo_fact_input = "C"
-    pto_vta_input = ""
-    num_comp_input = ""
-    monto_neto_input = 0.0
+    st.subheader("⌨️ Carga Manual")
     
-    # Correction for base imputation in manual mode?
-    # We leave standard flow.
-    pass
+    col_m1, col_m2 = st.columns([1, 2])
+    with col_m1:
+        cuit_input = st.text_input("CUIT del Proveedor", placeholder="Ej: 30123456789", key="manual_cuit")
+    
+    # Real-time search
+    is_validated = False
+    validated_name = ""
+    if cuit_input:
+        clean_input = cuit_input.replace("-", "").replace(" ", "")
+        for db_cuit, db_name in data.PROVEEDORES_DB.items():
+            if db_cuit == cuit_input or db_cuit.replace("-", "") == clean_input:
+                is_validated = True
+                validated_name = db_name
+                cuit_input = db_cuit
+                break
+
+    provider_status = "none"
+    with col_m2:
+        if is_validated:
+            st.success(f"✅ **Validado:** {validated_name}")
+            provider_input = validated_name
+            provider_status = "valid"
+        elif cuit_input:
+            st.warning("🔍 Proveedor no encontrado")
+            provider_input = st.text_input("Razón Social", placeholder="Nombre del proveedor", key="manual_provider")
+            provider_status = "pending_approval"
+        else:
+            provider_input = ""
+            st.info("Ingrese CUIT para validar")
+
+    st.markdown("---")
+    c1, c2, c3 = st.columns(3)
+    with col_m1: # Reuse previous columns or simple select
+        tipo_fact_input = st.selectbox("Tipo", ["A", "B", "C", "M", "Ticket"], index=2, key="manual_tipo")
+    with col_m2:
+        pto_vta_input = st.text_input("Sucursal (5)", max_chars=5, key="manual_suc")
+    with c3:
+        num_comp_input = st.text_input("Número (8)", max_chars=8, key="manual_num")
+    
+    monto_neto_input = 0.0
+    if tipo_fact_input == "A":
+        monto_neto_input = st.number_input("Monto Neto Gravado", value=0.0, key="manual_neto")
+        
+    afip_code_input = st.text_input("Código AFIP", key="manual_afip")
 
 
 # --- LOGIC: BALANCES & FLAGS ---
