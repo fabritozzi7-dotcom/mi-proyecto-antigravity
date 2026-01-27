@@ -261,6 +261,7 @@ DRIVE_FOLDER_ID_CONST = "1y5W...PASTE_ID_HERE" # User should replace this or set
 from google.oauth2.credentials import Credentials as UserCredentials
 
 def get_drive_creds():
+    """
     Returns credentials for Drive Upload. 
     Prioritizes 'token.json' (User Auth) to avoid Quota issues.
     Fallbacks to Service Account.
