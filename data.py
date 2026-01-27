@@ -72,7 +72,21 @@ CONCEPTOS_OFICINA_DB = {}
 # In production, this can be huge. We try to load from providers.txt first.
 PROVEEDORES_DB = {}
 
-# ... (keep load_providers_from_file unchanged) ...
+def load_providers_from_file():
+    """Loads providers from providers.txt as a fallback/initial DB"""
+    try:
+        if os.path.exists('providers.txt'):
+            with open('providers.txt', 'r', encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split('\t')
+                    if len(parts) == 2:
+                        name, cuit = parts
+                        PROVEEDORES_DB[cuit.strip()] = name.strip()
+            logger.info(f"Loaded providers from file")
+    except Exception as e:
+        logger.error(f"Error loading providers.txt: {e}")
+
+load_providers_from_file()
 
 # ==========================================
 # 2. GOOGLE SHEETS INTEGRATION
@@ -81,10 +95,7 @@ PROVEEDORES_DB = {}
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
-
-# ... (existing imports)
-
-# Scopes must match exactly what was requested in setup_auth.py
+# Credentials initialization
 SCOPE = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.file"
@@ -245,20 +256,11 @@ def sync_data_from_sheets():
         err_msg = f"{type(e).__name__}: {str(e)} [Email activo: {email}]"
         logger.error(f"GSheets Sync Error: {err_msg}")
         return False, err_msg
-
-# ... (existing imports)
-
-# HARDCODED FOLDER ID (Ideally in env)
+# Drive configuration constants
 DRIVE_FOLDER_ID_CONST = "1y5W...PASTE_ID_HERE" # User should replace this or set env var
-
-# ... (existing functions)
-
 from google.oauth2.credentials import Credentials as UserCredentials
 
-# ...
-
 def get_drive_creds():
-    """
     Returns credentials for Drive Upload. 
     Prioritizes 'token.json' (User Auth) to avoid Quota issues.
     Fallbacks to Service Account.

@@ -61,13 +61,18 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
 
         # REGLAS DE NEGOCIO (ESTRICTAS)
 
-        ## 1. DETECCIÓN DE TIPO DE COMPROBANTE
-        Lo primero que debes hacer es identificar la LETRA del comprobante (A, B, C, M).
-        - **Si es "A" o "M":** Ejecuta la lógica de "Responsable Inscripto".
-        - **Si es "B" o "C":** Ejecuta la lógica de "Consumidor Final / Monotributo".
-        
-        ## IMPORTANTE: CODIGO AFIP
-        Busca cerca de la letra o arriba a la derecha el "COD. XX" (ej: 001, 006). Normalízalo a 3 dígitos si es necesario.
+        ## 1. DETECCIÓN DE DATOS (IMPORTANTE)
+        - **IDENTIFICACIÓN DE CUIT (REGLA DE ORO):**
+            - Las facturas Tipo A y C tienen dos CUITs (Emisor y Receptor).
+            - El **CUIT del PROVEEDOR (Emisor)** siempre está en el ENCABEZADO (parte superior del ticket). Es el PRIMERO que aparece.
+            - El CUIT del Cliente (Nosotros) está más abajo.
+            - **CRÍTICO:** Debes tomar el CUIT que está en la parte superior del comprobante.
+        - **Factura B:** Suele tener solo el CUIT del emisor.
+        - **Factura C:** Aplica la misma regla que la A (Proveedor arriba, Cliente abajo).
+
+        ## 2. LÓGICA POR TIPO
+        - **TIPO DE COMPROBANTE:** Identifica la LETRA (A, B, C, M).
+        - **CÓDIGO AFIP:** Busca "COD. XX" (ej: 001, 006, 011). Normalízalo a 3 dígitos.
 
         ## 2. LÓGICA PARA FACTURA TIPO "A" (Discriminación Obligatoria)
         Debes desglosar cada centavo del ticket.
