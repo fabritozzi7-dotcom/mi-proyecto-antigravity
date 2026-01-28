@@ -499,10 +499,6 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
         monto_gravado_final = 0.0
         if tipo_fact_input == "A":
             monto_gravado_final = monto_neto_input
-        elif tipo_fact_input == "B":
-            # "Neto Gravado logic... saldo de respaldo debe ser la base imponible"
-            # For B, base is usually Total or Imputed.
-            monto_gravado_final = monto_imputar
         
         # Logic for Provider Validation (Column 15)
         prov_valid_txt = "Sí" if provider_status == "valid" else "No"
