@@ -85,36 +85,30 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
 
         ## 2. LÓGICA PARA FACTURA TIPO "A" (Discriminación Obligatoria)
         Debes desglosar cada centavo del ticket.
-        - **Neto Gravado:** Identifica la base imponible sobre la que se calcula el IVA.
-        - **IVA (Tasas):** Identifica y separa los montos por tasa.
-            - Si el ticket NO explicita el % (ej. solo dice "IVA $210"), CALCULA la tasa: `(Monto IVA / Neto Gravado)`.
-            - Resultado ~0.21 -> Asignar a **IVA 21%**.
-            - Resultado ~0.105 -> Asignar a **IVA 10.5%**.
-            - Resultado ~0.27 -> Asignar a **IVA 27%**.
-        - **Percepciones:**
-            - **Ganancias:** Busca "Perc. Ganancias" o similar.
-            - **IIBB:** Busca "Perc. IIBB" o "Ingresos Brutos".
-        - **No Gravado:** Suma aquí conceptos exentos, impuestos internos (combustibles, cigarrillos), tasas municipales o percepciones no categorizadas.
+        - **Neto Gravado:** Identifica la base imponible.
+        - **IVA (Tasas):** Identifica y separa los montos por tasa (21%, 10.5%, 27%).
+        - **No Gravado (REGLA DE ORO):** Suma aquí TODO impuesto, tasa o cargo extra que NO sea IVA ni Percepción (IIBB/Ganancias). 
+            - Incluye: Tasas Municipales, Impuestos Internos (Combustibles Líquidos), Fondo Hídrico, etc. 
+            - **Cualquier monto que no sea IVA o Percepción va a esta columna.**
 
         ## IMPORTANTE: JURISDICCIÓN (CONDICIONAL)
-        La jurisdicción SOLAMENTE es relevante si detectas una "Percepción de IIBB" (Ingresos Brutos) mayor a 0 en el campo `columna_W_perc_iibb`.
-        - **SI hay Percepción de IIBB:** Busca la provincia asociada (ej: "Mendoza", "CABA", "Córdoba") y asigna el código en `columna_X_jurisdiccion_code`.
-        - **SI NO hay Percepción de IIBB:** Asigna `null` a `columna_X_jurisdiccion_code`. No intentes adivinar la provincia por el domicilio si no hay impuesto provincial.
-        - **Códigos:** CABA -> "CF", Buenos Aires -> "BA", Córdoba -> "CD", Santa Fe -> "SF", Mendoza -> "MZ" (o el de 2 letras estándar).
+        La jurisdicción depende del origen del emisor y solo se informa si hay "Percepción de IIBB" > 0.
+        - **Códigos Requeridos:** Córdoba -> "OB", Capital Federal (CABA) -> "CF". 
+        - Otros: Buenos Aires -> "BA", Santa Fe -> "SF", Mendoza -> "MZ".
+        - **SI hay Percepción de IIBB:** Asigna el código correspondiente en `columna_X_jurisdiccion_code`.
+        - **SI NO hay Percepción de IIBB:** Asigna `null`.
 
         ## 3. LÓGICA PARA FACTURA TIPO "B" o "C" (Agrupación Total)
-        Esta es una regla de oro: **NUNCA DISCRIMINES IMPUESTOS EN FACTURAS B O C**.
-        - Aunque el ticket diga "IVA Incluido: $XXX", **IGNÓRALO**.
-        - Toma el **Monto Total** del comprobante.
-        - Asigna el **100% del valor** al campo **"No Gravado"** (Columna R).
-        - Los campos de IVA, Neto Gravado y Percepciones DEBEN ser 0.00.
+        - **IMPORTANTE:** NUNCA DISCRIMINES IMPUESTOS EN B O C.
+        - Todo el valor del ticket (100%) va a la columna **"No Gravado"** (Columna R).
 
         ## 4. VALIDACIÓN DE INTEGRIDAD MATEMÁTICA
-        Antes de finalizar, realiza la siguiente suma de control internamente:
+        - **VALIDACIÓN BASE (HEURÍSTICA 21%):** Si el ticket es simple, verifica si `Neto Gravado * 0.21` coincide con el IVA. 
+            - Si NO coincide, es un **Caso Especial** (múltiples alícuotas o cargos extras); revisa con cuidado.
+        - **Suma de Control:** 
         `SUMA = (No Gravado + Neto Gravado + IVA 21 + IVA 10.5 + IVA 27 + Perc. Gcias + Perc. IIBB)`
-
         - La `SUMA` debe ser **EXACTAMENTE IGUAL** al **Monto Total**.
-        - Si existe una diferencia menor a $0.05 (centavos) por redondeo, ajusta el campo "No Gravado" para que la suma cuadre perfectamente con el Total.
+        - Si hay diferencia menor a $0.05 por redondeo, ajústalo en "No Gravado".
 
         # FORMATO DE SALIDA (JSON)
         Devuelve ÚNICAMENTE un objeto JSON con esta estructura exacta para mapear al Google Sheet:
