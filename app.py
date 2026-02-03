@@ -78,6 +78,10 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         ## 2. LÓGICA POR TIPO
         - **TIPO DE COMPROBANTE:** Identifica la LETRA (A, B, C, M).
         - **CÓDIGO AFIP:** Busca "COD. XX" (ej: 001, 006, 011). Normalízalo a 3 dígitos.
+        - **PUNTO DE VENTA (SUCURSAL):** 
+            - El Punto de Venta (PV) es siempre de 4 o 5 dígitos.
+            - **Opesa/Combustibles:** NO confundas el "Nro. Estación" (ej: Station 123) con el PV. El PV suele aparecer como `PV: 00010` o `00010-00000001`.
+            - Si ves una cadena `XXXXX-YYYYYYYY`, el `XXXXX` es la sucursal/PV.
 
         ## 2. LÓGICA PARA FACTURA TIPO "A" (Discriminación Obligatoria)
         Debes desglosar cada centavo del ticket.
@@ -273,6 +277,16 @@ with st.container(border=True):
                     if isinstance(scan_result, dict):
                         st.write("Analizando datos extraídos...")
                         st.session_state.scanned_data = scan_result
+                        # Initialize correction keys so they "stick"
+                        st.session_state.scan_suc_input = str(scan_result.get("sucursal") or "").replace("-","")
+                        st.session_state.scan_num_input = str(scan_result.get("numero_comprobante") or "").replace("-","")
+                        st.session_state.scan_tipo_input = str(scan_result.get("tipo_factura") or "C").upper().strip()
+                        if st.session_state.scan_tipo_input not in ["A", "B", "C", "M", "Ticket"]:
+                            st.session_state.scan_tipo_input = "C"
+                        
+                        st.session_state.scan_cuit_input = str(scan_result.get("cuit") or "")
+                        st.session_state.scan_provider_input = str(scan_result.get("proveedor") or "")
+                        
                         status.update(label="✅ Escaneo completado!", state="complete", expanded=False)
                     else:
                         st.error(f"Error técnico: {scan_result}")
@@ -340,6 +354,13 @@ if "scanned_data" in st.session_state and final_image_bytes:
         else:
             base_imputacion = monto_ticket_total
 
+        # Ensure session state keys exist (in case of browser refresh)
+        if "scan_tipo_input" not in st.session_state: st.session_state.scan_tipo_input = default_tipo
+        if "scan_suc_input" not in st.session_state: st.session_state.scan_suc_input = default_suc
+        if "scan_num_input" not in st.session_state: st.session_state.scan_num_input = default_num
+        if "scan_cuit_input" not in st.session_state: st.session_state.scan_cuit_input = default_cuit
+        if "scan_provider_input" not in st.session_state: st.session_state.scan_provider_input = default_provider
+
         # --- KEY METRICS (Always visible if scanned) ---
         c1, c2 = st.columns(2)
         c1.metric("CUIT Detectado", default_cuit if default_cuit else "???")
@@ -358,7 +379,7 @@ if "scanned_data" in st.session_state and final_image_bytes:
         
         with v_col1:
             # The manual input defaults to what AI found, but allows correction
-            cuit_input = st.text_input("CUIT del Proveedor", value=default_cuit, placeholder="Ej: 30123456789")
+            cuit_input = st.text_input("CUIT del Proveedor", key="scan_cuit_input", placeholder="Ej: 30123456789")
         
         # Real-time search in DB based on manual OR ai input
         is_validated = False
@@ -382,7 +403,7 @@ if "scanned_data" in st.session_state and final_image_bytes:
                 provider_status = "valid"
             elif cuit_input:
                 st.warning("🔍 Proveedor no encontrado (Pendiente de Alta)")
-                provider_input = st.text_input("Razón Social (Manual)", value=default_provider)
+                provider_input = st.text_input("Razón Social (Manual)", key="scan_provider_input")
                 provider_status = "pending_approval"
             else:
                 provider_input = ""
@@ -390,13 +411,23 @@ if "scanned_data" in st.session_state and final_image_bytes:
 
         # Expanded Invoice Details (Fabian's Rules)
         st.markdown("---")
+        
+        # Ensure session state keys exist (in case of browser refresh)
+        if "scan_tipo_input" not in st.session_state: st.session_state.scan_tipo_input = default_tipo
+        if "scan_suc_input" not in st.session_state: st.session_state.scan_suc_input = default_suc
+        if "scan_num_input" not in st.session_state: st.session_state.scan_num_input = default_num
+
         c1, c2, c3 = st.columns(3)
         with c1:
-            tipo_fact_input = st.selectbox("Tipo", ["A", "B", "C", "M", "Ticket"], index=["A", "B", "C", "M", "Ticket"].index(default_tipo) if default_tipo in ["A","B","C","M","Ticket"] else 2)
+            tipo_fact_input = st.selectbox("Tipo", ["A", "B", "C", "M", "Ticket"], key="scan_tipo_input")
         with c2:
-            pto_vta_input = st.text_input("Sucursal (5)", value=default_suc, max_chars=5)
+            pto_vta_input = st.text_input("Sucursal (5)", key="scan_suc_input", max_chars=5, help="Debe ser de 5 dígitos (ej: 00001)")
+            if pto_vta_input and not pto_vta_input.isdigit():
+                st.caption("⚠️ Debe ser solo números")
+            elif pto_vta_input and len(pto_vta_input) < 5:
+                st.caption("ℹ️ Se completará con ceros a la izquierda (relleno a 5)")
         with c3:
-            num_comp_input = st.text_input("Número (8)", value=default_num, max_chars=8)
+            num_comp_input = st.text_input("Número (8)", key="scan_num_input", max_chars=8, help="Número de la factura (ej: 00012345)")
             
         # Conditional Input for Net Amount
         monto_neto_input = 0.0
@@ -618,7 +649,10 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
             if "obs_input" in st.session_state: st.session_state.obs_input = ""
             
             # Clear Manual Mode keys if they exist
-            keys_to_clear = ["manual_cuit", "manual_provider", "manual_tipo", "manual_suc", "manual_num", "manual_total", "manual_neto", "manual_afip"]
+            keys_to_clear = [
+                "manual_cuit", "manual_provider", "manual_tipo", "manual_suc", "manual_num", "manual_total", "manual_neto", "manual_afip",
+                "scan_suc_input", "scan_num_input", "scan_tipo_input", "scan_cuit_input", "scan_provider_input"
+            ]
             for k in keys_to_clear:
                 if k in st.session_state: del st.session_state[k]
             
