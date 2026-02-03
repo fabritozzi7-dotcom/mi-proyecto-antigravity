@@ -198,8 +198,8 @@ with st.container(border=True):
 with st.container(border=True):
     st.subheader("📝 Imputación de Gastos")
     
-    # Folder Number is strictly required now
-    folder_number = st.text_input("📂 Número de Carpeta (Obligatorio)", placeholder="Ej: IMP-2024-001")
+    # Folder Number is strictly required now. Supports multiple (comma separated)
+    folder_number = st.text_input("📂 Número de Carpeta (Obligatorio)", placeholder="Ej: IMP-2024-001, EXP-2024-050 (Separar con coma para prorrateo)")
     
     c1, c2 = st.columns(2)
     with c1:
@@ -488,114 +488,114 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
          st.error("⚠️ Debe haber un monto a imputar o un ticket válido.")
     else:
         # $1000 Closing Rule (Puchito)
-        # Modified: Now we just mark state in backend, do not auto-close in UI
         diff = abs(monto_ticket_total - monto_imputar)
         if 0 < diff < 1000.0:
             st.info("💰 Diferencia menor a $1000: Se marcará como 'LISTA PARA AJUSTE'")
-            # monto_imputar = monto_ticket_total # DISABLED per new instruction to just MARK state.
 
         # Logic for 'Gravado' (Column 16)
-        # Rule: If A -> Net. If B -> Imputed Amount. Else -> 0.
-        monto_gravado_final = 0.0
+        # Rule: If A -> Net. If B -> 0. Else -> 0.
+        monto_gravado_total_base = 0.0
         if tipo_fact_input == "A":
-            monto_gravado_final = monto_neto_input
+            monto_gravado_total_base = monto_neto_input
         
         # Logic for Provider Validation (Column 15)
         prov_valid_txt = "Sí" if provider_status == "valid" else "No"
-
-        # LOGIC: BALANCE SEARCH (Regla N a 1)
-        # If no new ticket is uploaded, but user is imputing an amount, search for existing Provider Balance
-        balance_info_msg = ""
-        found_balance = False
         
-        if not final_image_bytes and monto_imputar > 0 and cuit_input:
-             # Search...
-             with st.spinner("🔍 Buscando saldo a favor con Proveedor..."):
-                 inv_data = data.find_available_invoice_balance(cuit_input, monto_imputar)
-                 if inv_data:
-                     found_balance = True
-                     # Override components with found invoice data to link them
-                     tipo_fact_input = inv_data["tipo"]
-                     pto_vta_input = inv_data["sucursal"]
-                     num_comp_input = inv_data["numero"]
-                     balance_info_msg = f"✅ Se vinculó a Saldo Disponible: {tipo_fact_input} {pto_vta_input}-{num_comp_input} (Saldo: ${inv_data['saldo']:,.2f})"
-                     st.info(balance_info_msg)
-                 else:
-                     st.warning("⚠️ No se encontró FACTURA con saldo suficiente en CONTROL_SALDOS. Se guardará como pendiente de conciliación.")
-        
-        # Auditor Breakdown (New Strict Logic)
-        desglose_final = st.session_state.get("desglose_data", {}).copy()
-        if not desglose_final or modo_manual:
-            # Basic manual breakdown based on type
+        # Auditor Breakdown Base (Total)
+        desglose_base = st.session_state.get("desglose_data", {}).copy()
+        if not desglose_base or modo_manual:
+             # Basic manual breakdown based on type
             if tipo_fact_input in ["B", "C", "Ticket"]:
-                desglose_final = {
+                desglose_base = {
                     "columna_R_no_gravado": monto_ticket_total,
                     "monto_total_columna_Y": monto_ticket_total
                 }
             elif tipo_fact_input == "A":
-                # For manual A, we at least have the total and neto
-                desglose_final = {
+                desglose_base = {
                     "neto_gravado_aux": monto_neto_input,
                     "monto_total_columna_Y": monto_ticket_total,
-                    "columna_R_no_gravado": monto_ticket_total - monto_neto_input # Approximation
+                    "columna_R_no_gravado": monto_ticket_total - monto_neto_input
                 }
-        
-        payload = {
-            "fecha": expense_date.isoformat(),
-            "usuario": selected_user,
-            "oficina": office,
-            "numero_carpeta": folder_number,
-            "tipo_operacion": op_type,
-            "cliente": client or "Sin Cliente",
-            "concepto": selected_concept,
-            "monto_sugerido_concepto": suggested_amount_concept,
-            
-            # Invoice Data (Potentially updated by Balance Search)
-            "tipo_factura": tipo_fact_input,
-            "codigo_afip": afip_code_input,
-            "sucursal_factura": pto_vta_input,
-            "numero_factura": num_comp_input,
-            
-            # Provider
-            "proveedor_validado_txt": prov_valid_txt,
-            "proveedor_cuit": cuit_input,
-            "proveedor_nombre": provider_input,
-            
-            # Financials
-            "monto_gravado_calculado": monto_gravado_final,
-            "monto_ticket_total": monto_ticket_total,
-            "monto_a_imputar": monto_imputar,
-            
-            # Auditor Breakdown (New Strict Logic)
-            # Auditor Breakdown (New Strict Logic)
-            "auditor_desglose": desglose_final,
-            
-            # Metadata
-            "observaciones": observaciones
-        }
-        
-        # 1. Upload to Drive (if file exists)
+
+        # 1. Upload to Drive (ONCE)
         ticket_link = ""
+        uploaded_once = False
         if final_image_bytes:
             with st.spinner("Subiendo Ticket a Drive..."):
-                # Generate Filename: TICKET_CUIT_NUMERO.ext
                 ext = "pdf" if "pdf" in final_mime_type else "jpg"
                 fname = f"TICKET_{cuit_input}_{num_comp_input}.{ext}"
                 link, file_id, error_msg = data.upload_receipt_to_drive(final_image_bytes, fname, final_mime_type)
                 if link:
                     ticket_link = link
+                    uploaded_once = True
                     st.toast("✅ Archivo subido a Drive")
                 else:
                     st.error(f"Error subiendo archivo a Drive: {error_msg}")
 
-        # 2. Log to GSheets (if credentials exist)
-        try:
-             # Pass ticket_link to the updated function
-             gs_success = data.log_rendicion_to_sheet(payload, ticket_link)
-             if gs_success:
-                 st.toast("✅ Guardado en Google Sheets")
-        except Exception as e:
-             st.error(f"Error guardando en Sheets: {e}")
+        # 2. PRORATION LOGIC & SAVE LOOP
+        folders = [f.strip() for f in folder_number.split(",") if f.strip()]
+        import math
+        N = len(folders)
+        
+        success_count = 0
+        
+        progress_bar = st.progress(0)
+        
+        for idx, folder_code in enumerate(folders):
+             # Calculate Prorated Amounts
+             # We use simple float division.
+             p_monto_ticket = monto_ticket_total / N
+             p_monto_imputar = monto_imputar / N
+             p_monto_sugerido = suggested_amount_concept / N
+             p_monto_gravado = monto_gravado_total_base / N
+             
+             # Prorate Breakdown (Desglose)
+             p_desglose = {}
+             for k, v in desglose_base.items():
+                 if isinstance(v, (int, float)):
+                     p_desglose[k] = v / N
+                 else:
+                     p_desglose[k] = v # Keep strings as is (though desglose usually only has numbers/nulls)
 
-        st.success("✅ Rendición Procesada Exitosamente")
-        st.expander("Ver Datos Técnicos (Payload)").json(payload)
+             payload = {
+                "fecha": expense_date.isoformat(),
+                "usuario": selected_user,
+                "oficina": office,
+                "numero_carpeta": folder_code, # Unique per row
+                "tipo_operacion": op_type,
+                "cliente": client or "Sin Cliente",
+                "concepto": selected_concept,
+                "monto_sugerido_concepto": p_monto_sugerido, # Prorated
+                
+                "tipo_factura": tipo_fact_input,
+                "codigo_afip": afip_code_input,
+                "sucursal_factura": pto_vta_input,
+                "numero_factura": num_comp_input,
+                
+                "proveedor_validado_txt": prov_valid_txt,
+                "proveedor_cuit": cuit_input,
+                "proveedor_nombre": provider_input,
+                
+                "monto_gravado_calculado": p_monto_gravado, # Prorated
+                "monto_ticket_total": p_monto_ticket,       # Prorated
+                "monto_a_imputar": p_monto_imputar,         # Prorated
+                
+                "auditor_desglose": p_desglose,             # Prorated
+                "observaciones": observaciones
+            }
+             
+             # Log to GSheets
+             try:
+                 if data.log_rendicion_to_sheet(payload, ticket_link):
+                     success_count += 1
+             except Exception as e:
+                 st.error(f"Error guardando carpeta {folder_code}: {e}")
+             
+             progress_bar.progress((idx + 1) / N)
+
+        if success_count == N:
+            st.success(f"✅ Rendición guardada exitosamente en {N} carpetas (Prorrateo).")
+            st.balloons()
+            st.expander("Ver Datos Prorrateados (Última iteración)").json(payload)
+        else:
+            st.warning(f"⚠️ Se guardaron {success_count} de {N} carpetas. Revise la consola.")
