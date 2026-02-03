@@ -29,7 +29,12 @@ if "data_synced" not in st.session_state:
             sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
             st.error(f"⚠️ Error de Sincronización (Modo Offline): No se pudo abrir '{sheet_name}'. Detalles: {msg}")
             st.info("💡 Verifique que la planilla esté compartida con el email de la Service Account y que los Secretos en Streamlit Cloud sean correctos.")
+            st.info("💡 Verifique que la planilla esté compartida con el email de la Service Account y que los Secretos en Streamlit Cloud sean correctos.")
     st.session_state.data_synced = True
+
+# Initialize Session keys for Form Reset if not present
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
 
 def configure_genai():
     api_key = os.getenv("GOOGLE_API_KEY")
@@ -199,7 +204,7 @@ with st.container(border=True):
     st.subheader("📝 Imputación de Gastos")
     
     # Folder Number is strictly required now. Supports multiple (comma separated)
-    folder_number = st.text_input("📂 Número de Carpeta (Obligatorio)", placeholder="Ej: IMP-2024-001, EXP-2024-050 (Separar con coma para prorrateo)")
+    folder_number = st.text_input("📂 Número de Carpeta (Obligatorio)", placeholder="Ej: IMP-2024-001, EXP-2024-050 (Separar con coma para prorrateo)", key="folder_input")
     
     c1, c2 = st.columns(2)
     with c1:
@@ -219,7 +224,7 @@ with st.container(border=True):
         concepts_list = all_concepts
         st.caption("🔍 Mostrando todos los conceptos (Sin filtro de oficina)")
         
-    selected_concept = st.selectbox("Seleccionar Concepto", concepts_list, index=None, label_visibility="collapsed", placeholder="Escribe para buscar...")
+    selected_concept = st.selectbox("Seleccionar Concepto", concepts_list, index=None, label_visibility="collapsed", placeholder="Escribe para buscar...", key="concept_input")
     
     # Auto-fill logic
     suggested_amount_concept = 0.0
@@ -234,7 +239,7 @@ with st.container(border=True):
                                   key=f"monto_imputar_{selected_concept}")
     
     # New Field: Observations (Column AD)
-    observaciones = st.text_area("📝 Observaciones (Opcional)", placeholder="Detalles adicionales, número de guía, etc...", height=80)
+    observaciones = st.text_area("📝 Observaciones (Opcional)", placeholder="Detalles adicionales, número de guía, etc...", height=80, key="obs_input")
 
 
 # --- CARD 3: COMPROBANTE & IA ---
@@ -253,7 +258,7 @@ with st.container(border=True):
             final_mime_type = "image/jpeg"
             
     with tab_upload:
-        file_input = st.file_uploader("Seleccionar archivo", type=["jpg", "png", "jpeg", "pdf"])
+        file_input = st.file_uploader("Seleccionar archivo", type=["jpg", "png", "jpeg", "pdf"], key=f"uploader_{st.session_state.uploader_key}")
         if file_input: 
             final_image_bytes = file_input.getvalue()
             final_mime_type = file_input.type # Dynamically get mime type (e.g. application/pdf)
@@ -595,7 +600,38 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
 
         if success_count == N:
             st.success(f"✅ Rendición guardada exitosamente en {N} carpetas (Prorrateo).")
-            st.balloons()
-            st.expander("Ver Datos Prorrateados (Última iteración)").json(payload)
+            # RESET FORM LOGIC
+            st.session_state.scanned_data = None # Clear AI
+            if "desglose_data" in st.session_state: del st.session_state.desglose_data
+            
+            # Clear Inputs via Session State
+            # Note: We don't delete the key, we just clear the value (if using key, modifying st.session_state[key] updates widget)
+            # Actually, for widgets, if we change the state, it updates on rerun.
+            
+            # Reset Uploader logic (Increment key to force new widget)
+            st.session_state.uploader_key += 1
+            
+            # Clear text inputs
+            # To strictly 'clear' them for the next run:
+            if "folder_input" in st.session_state: st.session_state.folder_input = ""
+            if "concept_input" in st.session_state: st.session_state.concept_input = None
+            if "obs_input" in st.session_state: st.session_state.obs_input = ""
+            
+            # Clear Manual Mode keys if they exist
+            keys_to_clear = ["manual_cuit", "manual_provider", "manual_tipo", "manual_suc", "manual_num", "manual_total", "manual_neto", "manual_afip"]
+            for k in keys_to_clear:
+                if k in st.session_state: del st.session_state[k]
+            
+            st.button("🔄 Cargar Nueva Rendición (Limpiar)", type="secondary", on_click=st.rerun)
+            
+            # Auto-rerun after short delay/toast if preferred, or just rely on button. 
+            # The User asked for "Guardar y Nuevo" experience. 
+            # We can force rerun immediately or let them see the success message.
+            # Let's show the success details, then a button to 'refresh' or just clear it.
+            # Ideally, immediate clear is better for speed.
+            import time
+            time.sleep(1.5) # Show success briefly
+            st.rerun()
+            
         else:
             st.warning(f"⚠️ Se guardaron {success_count} de {N} carpetas. Revise la consola.")
