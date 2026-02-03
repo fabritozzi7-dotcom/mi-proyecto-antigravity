@@ -87,7 +87,11 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         Debes desglosar cada centavo del ticket.
         - **Neto Gravado:** Identifica la base imponible.
         - **IVA (Tasas):** Identifica y separa los montos por tasa (21%, 10.5%, 27%).
-        - **No Gravado (REGLA DE ORO):** Suma aquí TODO impuesto, tasa o cargo extra que NO sea IVA ni Percepción (IIBB/Ganancias). 
+        - **Percepciones (REGLA DE ORO):**
+            - **IVA:** Busca "Perc. IVA" o similar.
+            - **Ganancias:** Busca "Perc. Ganancias" o similar.
+            - **IIBB:** Busca "Perc. IIBB" o "Ingresos Brutos".
+        - **No Gravado (REGLA DE ORO):** Suma aquí TODO impuesto, tasa o cargo extra que NO sea IVA ni Percepción (IVA/IIBB/Ganancias). 
             - Incluye: Tasas Municipales, Impuestos Internos (Combustibles Líquidos), Fondo Hídrico, etc. 
             - **Cualquier monto que no sea IVA o Percepción va a esta columna.**
 
@@ -95,7 +99,7 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         La jurisdicción depende del origen del emisor y solo se informa si hay "Percepción de IIBB" > 0.
         - **Códigos Requeridos:** Córdoba -> "OB", Capital Federal (CABA) -> "CF". 
         - Otros: Buenos Aires -> "BA", Santa Fe -> "SF", Mendoza -> "MZ".
-        - **SI hay Percepción de IIBB:** Asigna el código correspondiente en `columna_X_jurisdiccion_code`.
+        - **SI hay Percepción de IIBB:** Asigna el código correspondiente en `columna_Y_jurisdiccion_code`.
         - **SI NO hay Percepción de IIBB:** Asigna `null`.
 
         ## 3. LÓGICA PARA FACTURA TIPO "B" o "C" (Agrupación Total)
@@ -106,7 +110,9 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         - **VALIDACIÓN BASE (HEURÍSTICA 21%):** Si el ticket es simple, verifica si `Neto Gravado * 0.21` coincide con el IVA. 
             - Si NO coincide, es un **Caso Especial** (múltiples alícuotas o cargos extras); revisa con cuidado.
         - **Suma de Control:** 
-        `SUMA = (No Gravado + Neto Gravado + IVA 21 + IVA 10.5 + IVA 27 + Perc. Gcias + Perc. IIBB)`
+        `SUMA = (No Gravado + Neto Gravado + IVA 21 + IVA 10.5 + IVA 27 + Perc. IVA + Perc. Gcias + Perc. IIBB)`
+        - La `SUMA` debe ser **EXACTAMENTE IGUAL** al **Monto Total**.
+        - Si hay diferencia menor a $0.05 por redondeo, ajústalo en "No Gravado".
         - La `SUMA` debe ser **EXACTAMENTE IGUAL** al **Monto Total**.
         - Si hay diferencia menor a $0.05 por redondeo, ajústalo en "No Gravado".
 
@@ -121,16 +127,17 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
           "cuit": "String (Solo números, sin guiones)",
           "sucursal": "Punto de venta (5 digitos)",
           "numero_comprobante": "Numero (8 digitos)",
-          "monto_total_columna_Y": Number (Float, el total a pagar),
+          "monto_total_columna_Z": Number (Float, el total a pagar),
           "desglose": {
             "columna_R_no_gravado": Number (Float. Si es B/C aquí va el TOTAL. Si es A, van exentos/imp internos),
             "columna_S_iva_21": Number (Float),
             "columna_T_iva_105": Number (Float),
             "columna_U_iva_27": Number (Float),
-            "columna_V_perc_ganancias": Number (Float),
-            "columna_W_perc_iibb": Number (Float),
-            "columna_X_jurisdiccion_code": "String (ej: CF, BA, CD) o null",
-            "neto_gravado_aux": Number (Float, aunque no se pide explícito en columnas R-X, es necesario para cálculos (Col Q))
+            "columna_V_perc_iva": Number (Float),
+            "columna_W_perc_ganancias": Number (Float),
+            "columna_X_perc_iibb": Number (Float),
+            "columna_Y_jurisdiccion_code": "String (ej: CF, BA, OB) o null",
+            "neto_gravado_aux": Number (Float, aunque no se pide explícito en columnas R-Y, es necesario para cálculos (Col Q))
           },
           "validacion_check": "String (OK si la suma cuadra, ERROR si no)"
         }
@@ -320,13 +327,12 @@ if "scanned_data" in st.session_state and final_image_bytes:
 
         # New Auditor Fields
         try:
-            monto_ticket_total = float(data_ia.get("monto_total_columna_Y") or 0.0)
-            
             # Extract Desglose
             desglose = data_ia.get("desglose", {})
             st.session_state.desglose_data = desglose # Store for payload
             
             # Helper for imputation base
+            monto_ticket_total = float(data_ia.get("monto_total_columna_Z") or data_ia.get("monto_total_columna_Y") or 0.0)
             monto_neto = float(desglose.get("neto_gravado_aux") or 0.0)
              
             # Validation Check
@@ -543,8 +549,9 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
             elif tipo_fact_input == "A":
                 desglose_base = {
                     "neto_gravado_aux": monto_neto_input,
-                    "monto_total_columna_Y": monto_ticket_total,
-                    "columna_R_no_gravado": monto_ticket_total - monto_neto_input
+                    "monto_total_columna_Z": monto_ticket_total,
+                    "columna_R_no_gravado": monto_ticket_total - monto_neto_input,
+                    "columna_V_perc_iva": 0.0
                 }
 
         # 1. Upload to Drive (ONCE)

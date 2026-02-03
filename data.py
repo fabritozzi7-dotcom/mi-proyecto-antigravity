@@ -453,15 +453,16 @@ def log_rendicion_to_sheet(payload, ticket_url=""):
         # If Type B/C, 'monto_ticket' is total, and auditor puts it in "No Gravado" or we force it here?
         # The prompt says Auditor puts it in "No Gravado". We trust the desglose dict.
         
-        col_q_neto = payload.get("monto_gravado_calculado", 0) # Q: Neto Gravado
+        col_q_neto = payload.get("monto_gravado_calculated", payload.get("monto_gravado_calculado", 0)) 
         col_r_no_grav = desglose.get("columna_R_no_gravado", 0)
         col_s_iva21 = desglose.get("columna_S_iva_21", 0)
         col_t_iva105 = desglose.get("columna_T_iva_105", 0)
         col_u_iva27 = desglose.get("columna_U_iva_27", 0)
-        col_v_perc_g = desglose.get("columna_V_perc_ganancias", 0)
-        col_w_perc_i = desglose.get("columna_W_perc_iibb", 0)
-        col_x_juris = desglose.get("columna_X_jurisdiccion_code", "")
-        col_y_total = desglose.get("monto_total_columna_Y", monto_ticket) # Use Desglose Total or Fallback
+        col_v_perc_iva = desglose.get("columna_V_perc_iva", 0)
+        col_w_perc_g = desglose.get("columna_W_perc_ganancias", 0)
+        col_x_perc_i = desglose.get("columna_X_perc_iibb", 0)
+        col_y_juris = desglose.get("columna_Y_jurisdiccion_code", "")
+        col_z_total = desglose.get("monto_total_columna_Z", desglose.get("monto_total_columna_Y", monto_ticket))
 
         row = [
             row_id,                                     # 1. ID Operación
@@ -481,23 +482,24 @@ def log_rendicion_to_sheet(payload, ticket_url=""):
             payload.get("proveedor_validado_txt", "No"),# 15. Proveedor_Validado
             cuit,                                       # 16. Cuit_Proveedor_AI
             
-            # --- NEW AUDITOR COLUMNS (Q-Y) ---
+            # --- NEW AUDITOR COLUMNS (Q-Z) --- 
             col_q_neto,                                 # 17 (Q). Neto Gravado
             col_r_no_grav,                              # 18 (R). No Gravado (o Total B/C)
             col_s_iva21,                                # 19 (S). IVA 21%
             col_t_iva105,                               # 20 (T). IVA 10.5%
             col_u_iva27,                                # 21 (U). IVA 27%
-            col_v_perc_g,                               # 22 (V). Perc Ganancias
-            col_w_perc_i,                               # 23 (W). Perc IIBB
-            col_x_juris,                                # 24 (X). Jurisdicción
-            col_y_total,                                # 25 (Y). Monto Total Ticket
+            col_v_perc_iva,                             # 22 (V). Perc IVA
+            col_w_perc_g,                               # 23 (W). Perc Ganancias
+            col_x_perc_i,                               # 24 (X). Perc IIBB
+            col_y_juris,                                # 25 (Y). Jurisdicción
+            col_z_total,                                # 26 (Z). Monto Total Ticket
             
-            # --- SHIFTED METADATA (Z+) ---
-            monto_imputar,                              # 26. Monto a Imputar (Manual)
-            ticket_url,                                 # 27. Ticket URL
-            estado_saldo,                               # 28. Estado (Puchito)
-            clave_unica,                                # 29. Clave Maestra
-            payload.get("observaciones", "")            # 30. Observaciones (Col AD)
+            # --- SHIFTED METADATA (AA+) ---
+            monto_imputar,                              # 27 (AA). Monto a Imputar (Manual)
+            ticket_url,                                 # 28 (AB). Ticket URL
+            estado_saldo,                               # 29 (AC). Estado (Puchito)
+            clave_unica,                                # 30 (AD). Clave Maestra
+            payload.get("observaciones", "")            # 31 (AE). Observaciones
         ]
         
         ws_log.append_row(row)
