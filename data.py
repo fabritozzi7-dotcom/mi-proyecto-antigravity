@@ -147,6 +147,7 @@ def sync_data_from_sheets():
 
         logger.info(f"Target Sheet: {sheet_id if sheet_id else sheet_name}")
 
+        sh = None
         if sheet_id:
              try:
                  logger.info("Opening sheet by ID...")
@@ -254,6 +255,14 @@ def sync_data_from_sheets():
                 
         except Exception as e:
             logger.warning(f"Could not sync DB_CLIENTE: {e}")
+
+        # 4. Retroactive Validation (New Feature)
+        try:
+            count_fixed = _revalidate_log(client, sheet_id if sheet_id else sheet_name, PROVEEDORES_DB)
+            if count_fixed > 0:
+                logger.info(f"Retro-validation: {count_fixed} rows updated to 'Sí'")
+        except Exception as e:
+            logger.error(f"Retro-validation error: {e}")
 
         return True, "Sync OK"
 
@@ -496,3 +505,63 @@ def log_rendicion_to_sheet(payload, ticket_url=""):
     except Exception as e:
         logger.error(f"Error logging to sheet: {e}")
         return False
+
+def _revalidate_log(client, sheet_key, providers_db):
+    """
+    Scans RENDICIONES_LOG for rows where 'Proveedor Validado' (Col O) is 'No'
+    and checks if the CUIT (Col P) exists in the updated providers_db.
+    If yes, updates Col O to 'Sí'.
+    """
+    try:
+        sh = client.open_by_key(sheet_key) if sheet_key.startswith("1") else client.open(sheet_key)
+        ws = sh.worksheet("RENDICIONES_LOG")
+        
+        # Get Columns O (15) and P (16). 1-based index.
+        # Efficiently get all values
+        # We assume headers are row 1.
+        
+        # Get O and P columns. 
+        # Note: gspread get_values handles 'O:P'
+        data_range = ws.get_values("O:P") 
+        
+        if not data_range:
+            return 0
+            
+        updates = []
+        
+        # Iterate (Skip header row 0)
+        for i, row in enumerate(data_range):
+            if i == 0: continue # Header
+            
+            # Row structure: [Col O value, Col P value]
+            if len(row) < 2: continue
+            
+            status = str(row[0]).strip()
+            cuit = str(row[1]).strip()
+            
+            if status in ["No", "pending_approval", "Pending"]:
+                # Check DB
+                clean_cuit = cuit.replace("-", "").strip()
+                match = False
+                if cuit in providers_db: match = True
+                elif clean_cuit in providers_db: match = True
+                elif clean_cuit in [k.replace("-", "") for k in providers_db.keys()]: match = True
+                
+                if match:
+                    # Log index is i + 1 (1-based)
+                    # We want to update Col O (15)
+                    # batch_update format: {'range': 'O5', 'values': [['Sí']]}
+                    cell_ref = f"O{i+1}"
+                    updates.append({
+                        'range': cell_ref,
+                        'values': [['Sí']]
+                    })
+        
+        if updates:
+            ws.batch_update(updates)
+            return len(updates)
+            
+        return 0
+    except Exception as e:
+        logger.error(f"Error in _revalidate_log: {e}")
+        return 0
