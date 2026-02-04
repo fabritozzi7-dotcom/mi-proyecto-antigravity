@@ -36,6 +36,25 @@ if "data_synced" not in st.session_state:
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
 
+if st.session_state.get("needs_reset"):
+    # Clear specific widget-bound keys safely at the START of the run
+    keys_to_reset = [
+        "folder_input", "concept_input", "obs_input", "scanned_data", "desglose_data",
+        "manual_cuit", "manual_provider", "manual_tipo", "manual_suc", "manual_num", "manual_total", "manual_neto", "manual_afip",
+        "scan_suc_input", "scan_num_input", "scan_tipo_input", "scan_cuit_input", "scan_provider_input"
+    ]
+    for k in keys_to_reset:
+        if k in st.session_state:
+            del st.session_state[k]
+    
+    # Also clear dynamic monto_imputar keys
+    for k in list(st.session_state.keys()):
+        if k.startswith("monto_imputar_"):
+            del st.session_state[k]
+            
+    st.session_state.uploader_key += 1
+    st.session_state.needs_reset = False # Reset the flag
+
 def configure_genai():
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
@@ -631,41 +650,14 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
              progress_bar.progress((idx + 1) / N)
 
         if success_count == N:
-            st.success(f"✅ Rendición guardada exitosamente en {N} carpetas (Prorrateo).")
-            # RESET FORM LOGIC
-            st.session_state.scanned_data = None # Clear AI
-            if "desglose_data" in st.session_state: del st.session_state.desglose_data
+            st.toast(f"✅ Rendición guardada exitosamente en {N} carpetas.")
+            # Set reset flag for NEXT run
+            st.session_state.needs_reset = True
             
-            # Clear Inputs via Session State
-            # Note: We don't delete the key, we just clear the value (if using key, modifying st.session_state[key] updates widget)
-            # Actually, for widgets, if we change the state, it updates on rerun.
-            
-            # Reset Uploader logic (Increment key to force new widget)
-            st.session_state.uploader_key += 1
-            
-            # Clear text inputs
-            # To strictly 'clear' them for the next run:
-            if "folder_input" in st.session_state: st.session_state.folder_input = ""
-            if "concept_input" in st.session_state: st.session_state.concept_input = None
-            if "obs_input" in st.session_state: st.session_state.obs_input = ""
-            
-            # Clear Manual Mode keys if they exist
-            keys_to_clear = [
-                "manual_cuit", "manual_provider", "manual_tipo", "manual_suc", "manual_num", "manual_total", "manual_neto", "manual_afip",
-                "scan_suc_input", "scan_num_input", "scan_tipo_input", "scan_cuit_input", "scan_provider_input"
-            ]
-            for k in keys_to_clear:
-                if k in st.session_state: del st.session_state[k]
-            
-            st.button("🔄 Cargar Nueva Rendición (Limpiar)", type="secondary", on_click=st.rerun)
-            
-            # Auto-rerun after short delay/toast if preferred, or just rely on button. 
-            # The User asked for "Guardar y Nuevo" experience. 
-            # We can force rerun immediately or let them see the success message.
-            # Let's show the success details, then a button to 'refresh' or just clear it.
-            # Ideally, immediate clear is better for speed.
+            # Show a success modal or temporary message if needed, 
+            # but st.toast + st.rerun is the cleanest "Guardar y Nuevo" UX.
             import time
-            time.sleep(1.5) # Show success briefly
+            time.sleep(1.0) 
             st.rerun()
             
         else:
