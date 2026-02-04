@@ -169,7 +169,25 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         """
         
         image_parts = [{"mime_type": mime_type, "data": image_bytes}]
-        response = model.generate_content([prompt, image_parts[0]])
+        
+        # ERROR HANDLING 429: Retry Logic with Exponential Backoff
+        import time
+        max_retries = 3
+        retry_delay = 2 # Starting delay in seconds
+        
+        for attempt in range(max_retries):
+            try:
+                response = model.generate_content([prompt, image_parts[0]])
+                break # Success!
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "ResourceExhausted" in error_str:
+                    if attempt < max_retries - 1:
+                        st.toast(f"⏳ Límite de carga excedido. Reintentando en {retry_delay}s... (Intento {attempt+1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2 # Double the delay for next time
+                        continue
+                raise e # Re-raise if not 429 or max retries reached
         
         if not response or not response.text:
              # Check for safety blocks if text is empty
