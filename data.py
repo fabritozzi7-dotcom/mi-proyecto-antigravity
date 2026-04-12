@@ -508,6 +508,279 @@ def log_rendicion_to_sheet(payload, ticket_url=""):
         logger.error(f"Error logging to sheet: {e}")
         return False
 
+def check_duplicate_comprobante(cuit, sucursal, numero):
+    """
+    Checks RENDICIONES_LOG for an existing row with the same CUIT (col 16) and N°Comprobante (col 14).
+    Returns True if a duplicate exists, False otherwise.
+    """
+    if not cuit or not numero:
+        return False
+
+    client, _ = get_gsheets_client()
+    if not client:
+        return False
+
+    try:
+        sheet_id = os.getenv("GSHEET_ID")
+        sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
+        try:
+            if "GSHEET_ID" in st.secrets:
+                sheet_id = st.secrets["GSHEET_ID"]
+            if "GSHEET_NAME" in st.secrets:
+                sheet_name = st.secrets["GSHEET_NAME"]
+        except:
+            pass
+
+        if sheet_id:
+            sh = client.open_by_key(sheet_id)
+        else:
+            sh = client.open(sheet_name)
+
+        ws_log = sh.worksheet("RENDICIONES_LOG")
+
+        # Build the expected N°Comprobante the same way log_rendicion_to_sheet does
+        suc = str(sucursal or "").strip()
+        num = str(numero or "").strip()
+        suc = suc.zfill(5) if suc.isdigit() else suc
+        num = num.zfill(8) if num.isdigit() else num
+        n_comprobante = f"{suc}{num}"
+        cuit_clean = str(cuit).strip()
+
+        # Col N (14) = N°Comprobante, Col P (16) = CUIT Proveedor
+        all_rows = ws_log.get_all_values()
+        for row in all_rows[1:]:  # skip header
+            if len(row) >= 16:
+                row_n_comp = str(row[13]).strip()   # col 14 (0-indexed: 13)
+                row_cuit = str(row[15]).strip()      # col 16 (0-indexed: 15)
+                if row_cuit == cuit_clean and row_n_comp == n_comprobante:
+                    return True
+        return False
+    except Exception as e:
+        logger.error(f"Error checking duplicate: {e}")
+        return False
+
+
+def _calcular_estado_saldo(saldo_restante):
+    """Determina el estado según el saldo restante."""
+    if saldo_restante == 0:
+        return "CERRADO"
+    elif saldo_restante < 1000 or saldo_restante < 0:
+        return "AJUSTE Puchito"
+    else:
+        return "EN PROCESO"
+
+
+def actualizar_control_saldos(payload):
+    """
+    Actualiza la hoja CONTROL_SALDOS tras guardar una rendición.
+    Si la factura ya existe (CUIT + ID Factura), actualiza imputado/saldo/estado.
+    Si no existe, crea una fila nueva.
+
+    Returns:
+        (bool, str): (éxito, mensaje)
+    """
+    try:
+        client, email = get_gsheets_client()
+        if not client:
+            return False, f"No se pudieron generar credenciales. Email: {email}"
+
+        sheet_id = os.getenv("GSHEET_ID")
+        sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
+        try:
+            if "GSHEET_ID" in st.secrets:
+                sheet_id = st.secrets["GSHEET_ID"]
+            if "GSHEET_NAME" in st.secrets:
+                sheet_name = st.secrets["GSHEET_NAME"]
+        except:
+            pass
+
+        if sheet_id:
+            sh = client.open_by_key(sheet_id)
+        else:
+            sh = client.open(sheet_name)
+
+        ws = sh.worksheet("CONTROL_SALDOS")
+
+        # Construir ID Factura
+        suc_raw = str(payload.get("sucursal_factura", "") or "").strip()
+        num_raw = str(payload.get("numero_factura", "") or "").strip()
+        suc = suc_raw.zfill(5) if suc_raw.isdigit() else suc_raw
+        num = num_raw.zfill(8) if num_raw.isdigit() else num_raw
+        id_factura = f"{suc}{num}"
+
+        cuit = str(payload.get("proveedor_cuit", "")).strip()
+        monto_a_imputar = safe_float(payload.get("monto_a_imputar", 0))
+
+        # Buscar fila existente con mismo CUIT (col A) + ID Factura (col B)
+        all_values = ws.get_all_values()
+        fila_encontrada = None
+        fila_idx = None  # 1-based row index in sheet
+
+        for i, row in enumerate(all_values):
+            if i == 0:
+                continue  # Skip header
+            if len(row) >= 2:
+                row_cuit = str(row[0]).strip()
+                row_id = str(row[1]).strip()
+                if row_cuit == cuit and row_id == id_factura:
+                    fila_encontrada = row
+                    fila_idx = i + 1  # 1-based
+                    break
+
+        if fila_encontrada:
+            # Actualizar fila existente
+            respaldo = safe_float(fila_encontrada[2]) if len(fila_encontrada) > 2 else 0.0
+            total_imputado = safe_float(fila_encontrada[3]) if len(fila_encontrada) > 3 else 0.0
+            total_imputado += monto_a_imputar
+            saldo = respaldo - total_imputado
+            estado = _calcular_estado_saldo(saldo)
+
+            ws.batch_update([
+                {'range': f'D{fila_idx}', 'values': [[round(total_imputado, 2)]]},
+                {'range': f'E{fila_idx}', 'values': [[round(saldo, 2)]]},
+                {'range': f'F{fila_idx}', 'values': [[estado]]},
+            ])
+            return True, f"Saldo actualizado: {id_factura} -> {estado} (${saldo:,.2f})"
+        else:
+            # Crear fila nueva
+            tipo = str(payload.get("tipo_factura", "")).strip().upper()
+            if tipo == "A":
+                respaldo = safe_float(payload.get("monto_neto_original", 0)) + \
+                           safe_float(payload.get("no_gravado_original", 0))
+            else:
+                respaldo = safe_float(payload.get("monto_ticket_total_original", 0))
+
+            saldo = respaldo - monto_a_imputar
+            estado = _calcular_estado_saldo(saldo)
+
+            ws.append_row([
+                cuit,
+                id_factura,
+                round(respaldo, 2),
+                round(monto_a_imputar, 2),
+                round(saldo, 2),
+                estado,
+            ])
+            return True, f"Nuevo saldo creado: {id_factura} -> {estado} (${saldo:,.2f})"
+
+    except Exception as e:
+        logger.error(f"Error actualizando CONTROL_SALDOS: {e}")
+        return False, str(e)
+
+
+def recalcular_control_saldos():
+    """
+    Recalcula CONTROL_SALDOS completo desde RENDICIONES_LOG.
+    Lee todas las rendiciones, agrupa por CUIT + ID Factura,
+    calcula respaldo/imputado/saldo/estado, y reescribe la hoja.
+
+    Returns:
+        (bool, str, int): (éxito, mensaje, filas actualizadas)
+    """
+    try:
+        client, email = get_gsheets_client()
+        if not client:
+            return False, f"No se pudieron generar credenciales. Email: {email}", 0
+
+        sheet_id = os.getenv("GSHEET_ID")
+        sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
+        try:
+            if "GSHEET_ID" in st.secrets:
+                sheet_id = st.secrets["GSHEET_ID"]
+            if "GSHEET_NAME" in st.secrets:
+                sheet_name = st.secrets["GSHEET_NAME"]
+        except:
+            pass
+
+        if sheet_id:
+            sh = client.open_by_key(sheet_id)
+        else:
+            sh = client.open(sheet_name)
+
+        # 1. Leer RENDICIONES_LOG
+        ws_log = sh.worksheet("RENDICIONES_LOG")
+        all_records = ws_log.get_all_records()
+
+        if not all_records:
+            return False, "RENDICIONES_LOG está vacía.", 0
+
+        # 2. Agrupar por CUIT + ID Factura
+        grupos = {}
+        for record in all_records:
+            cuit = str(record.get("Cuit_Proveedor_AI", "")).strip()
+            suc_raw = str(record.get("Sucursal", "") or "").strip()
+            num_raw = str(record.get("Número_de_factura", "") or "").strip()
+            suc = suc_raw.zfill(5) if suc_raw.isdigit() else suc_raw
+            num = num_raw.zfill(8) if num_raw.isdigit() else num_raw
+            id_factura = f"{suc}{num}"
+
+            if not cuit or not id_factura or id_factura == "0000000000000":
+                continue
+
+            key = f"{cuit}|{id_factura}"
+            if key not in grupos:
+                grupos[key] = {
+                    "cuit": cuit,
+                    "id_factura": id_factura,
+                    "tipo": str(record.get("factura_tipo", "")).strip().upper(),
+                    "records": [],
+                }
+            grupos[key]["records"].append(record)
+
+        # 3. Calcular saldos
+        filas_saldos = []
+        for key, grupo in grupos.items():
+            primer = grupo["records"][0]
+            tipo = grupo["tipo"]
+
+            # Determinar Respaldo
+            if tipo == "A":
+                respaldo = safe_float(primer.get("Neto Gravado", 0)) + \
+                           safe_float(primer.get("No Gravado", 0))
+            else:
+                respaldo = safe_float(primer.get("Monto Total Ticket", 0))
+
+            # Sumar todos los monto_a_imputar
+            total_imputado = sum(
+                safe_float(r.get("Monto a Imputar", 0))
+                for r in grupo["records"]
+            )
+
+            saldo = respaldo - total_imputado
+            estado = _calcular_estado_saldo(saldo)
+
+            filas_saldos.append([
+                grupo["cuit"],
+                grupo["id_factura"],
+                round(respaldo, 2),
+                round(total_imputado, 2),
+                round(saldo, 2),
+                estado,
+            ])
+
+        # 4. Limpiar y reescribir CONTROL_SALDOS
+        ws_saldos = sh.worksheet("CONTROL_SALDOS")
+        ws_saldos.clear()
+
+        header = ["Cuit_Proveedor", "ID_Factura", "Respaldo", "Total_Imputado", "Saldo Disponible", "Estado"]
+        all_data = [header] + filas_saldos
+
+        if len(filas_saldos) > 0:
+            total_rows = 1 + len(filas_saldos)
+            cell_range = f"A1:F{total_rows}"
+            ws_saldos.update(range_name=cell_range, values=all_data)
+
+        msg = f"Recalculado: {len(filas_saldos)} facturas procesadas"
+        logger.info(msg)
+        return True, msg, len(filas_saldos)
+
+    except Exception as e:
+        import traceback
+        err_detail = traceback.format_exc()
+        logger.error(f"Error recalculando CONTROL_SALDOS: {err_detail}")
+        return False, f"Error: {str(e)}", 0
+
+
 def _revalidate_log(client, sheet_key, providers_db):
     """
     Scans RENDICIONES_LOG for rows where 'Proveedor Validado' (Col O) is 'No'
@@ -567,3 +840,183 @@ def _revalidate_log(client, sheet_key, providers_db):
     except Exception as e:
         logger.error(f"Error in _revalidate_log: {e}")
         return 0
+
+
+# ==========================================
+# 4. EXPORTACIÓN DUX
+# ==========================================
+
+from dux_export import agrupar_por_comprobante, generar_filas_dux, DUX_HEADERS, safe_float
+
+
+def escribir_export_dux_en_sheet(fecha_desde=None, fecha_hasta=None, estado=None):
+    """
+    Lee RENDICIONES_LOG, filtra, genera filas ENC/DET y las escribe
+    en la hoja EXPORT_DUX del mismo spreadsheet.
+
+    Args:
+        fecha_desde (date|None): filtrar rendiciones >= esta fecha.
+        fecha_hasta (date|None): filtrar rendiciones <= esta fecha.
+        estado (str|None): filtrar por estado (CERRADO, PENDIENTE, etc.).
+                           None o "Todos" = sin filtro.
+
+    Returns:
+        (bool, str, int): (éxito, mensaje, cantidad de filas escritas).
+    """
+    client, email = get_gsheets_client()
+    if not client:
+        return False, f"No se pudieron generar credenciales. Email: {email}", 0
+
+    try:
+        sheet_id = os.getenv("GSHEET_ID")
+        sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
+        try:
+            if "GSHEET_ID" in st.secrets:
+                sheet_id = st.secrets["GSHEET_ID"]
+            if "GSHEET_NAME" in st.secrets:
+                sheet_name = st.secrets["GSHEET_NAME"]
+        except Exception:
+            pass
+
+        if sheet_id:
+            sh = client.open_by_key(sheet_id)
+        else:
+            sh = client.open(sheet_name)
+
+        logger.info(f"Dux export: Spreadsheet abierto OK (gspread {gspread.__version__})")
+
+        # 0. Limpieza: borrar hoja fantasma "Hoja 6" si existe
+        try:
+            hoja_basura = sh.worksheet("Hoja 6")
+            sh.del_worksheet(hoja_basura)
+            logger.info("Dux export: Hoja 'Hoja 6' eliminada")
+        except Exception:
+            pass
+
+        # 1. Leer RENDICIONES_LOG como lista de dicts
+        ws_log = sh.worksheet("RENDICIONES_LOG")
+        all_records = ws_log.get_all_records()
+
+        if not all_records:
+            return False, "RENDICIONES_LOG está vacía.", 0
+
+        logger.info(f"Dux export: {len(all_records)} filas leídas de RENDICIONES_LOG")
+
+        # 2. Mapear headers de Sheets a claves internas de dux_export
+        SHEET_KEY_MAP = {
+            "ID Operación": "id_operacion",
+            "Fecha": "fecha",
+            "Usuario": "usuario",
+            "Oficina": "oficina",
+            "Número de Carpeta": "numero_carpeta",
+            "Tipo de Operación": "tipo_operacion",
+            "Cliente": "cliente",
+            "Concepto": "concepto",
+            "Monto Concepto": "monto_concepto",
+            "factura_tipo": "factura_tipo",
+            "Código AFIP": "codigo_afip",
+            "Sucursal": "sucursal",
+            "Número_de_factura": "numero_factura",
+            "N°Comprobante": "n_comprobante",
+            "Proveedor_Validado": "proveedor_validado",
+            "Cuit_Proveedor_AI": "cuit_proveedor",
+            "Neto Gravado": "neto_gravado",
+            "No Gravado": "no_gravado",
+            "IVA 21%": "iva_21",
+            "IVA 10.5%": "iva_105",
+            "IVA 27%": "iva_27",
+            "Perc IVA": "perc_iva",
+            "Perc Ganancias": "perc_ganancias",
+            "Perc IIBB": "perc_iibb",
+            "Jurisdicción": "jurisdiccion",
+            "Monto Total Ticket": "monto_total_ticket",
+            "Monto a Imputar": "monto_a_imputar",
+            "Ticket URL": "ticket_url",
+            "Estado": "estado",
+            "Clave Maestra": "clave_maestra",
+            "Observaciones": "observaciones",
+        }
+
+        rendiciones = []
+        for record in all_records:
+            mapped = {}
+            for sheet_key, internal_key in SHEET_KEY_MAP.items():
+                mapped[internal_key] = record.get(sheet_key, "")
+            rendiciones.append(mapped)
+
+        logger.info(f"Dux export: {len(rendiciones)} rendiciones mapeadas a claves internas")
+
+        # 3. Aplicar filtros
+        if fecha_desde:
+            fecha_desde_str = fecha_desde.isoformat()
+            rendiciones = [r for r in rendiciones
+                           if str(r.get("fecha", ""))[:10] >= fecha_desde_str]
+
+        if fecha_hasta:
+            fecha_hasta_str = fecha_hasta.isoformat()
+            rendiciones = [r for r in rendiciones
+                           if str(r.get("fecha", ""))[:10] <= fecha_hasta_str]
+
+        if estado and estado != "Todos":
+            rendiciones = [r for r in rendiciones
+                           if str(r.get("estado", "")).strip().upper() == estado.upper()]
+
+        if not rendiciones:
+            return False, "No hay rendiciones que coincidan con los filtros.", 0
+
+        logger.info(f"Dux export: {len(rendiciones)} filas después de filtros")
+
+        # 4. Generar filas ENC/DET
+        grupos = agrupar_por_comprobante(rendiciones)
+        filas_dux = generar_filas_dux(grupos)
+
+        if not filas_dux:
+            return False, "No se generaron filas ENC/DET (sin comprobantes válidos).", 0
+
+        logger.info(f"Dux export: {len(filas_dux)} filas ENC/DET generadas ({len(grupos)} comprobantes)")
+
+        # 5. Crear o limpiar hoja EXPORT_DUX
+        hoja_nombres = [ws.title for ws in sh.worksheets()]
+        logger.info(f"Dux export: Hojas existentes: {hoja_nombres}")
+
+        if "EXPORT_DUX" in hoja_nombres:
+            ws_export = sh.worksheet("EXPORT_DUX")
+            ws_export.clear()
+            logger.info("Dux export: Hoja EXPORT_DUX encontrada y limpiada")
+        else:
+            ws_export = sh.add_worksheet(title="EXPORT_DUX", rows=1000, cols=28)
+            logger.info("Dux export: Hoja EXPORT_DUX creada (1000 filas x 28 cols)")
+
+        # 6. Asegurar que la hoja tenga suficientes filas
+        total_rows = 1 + len(filas_dux)  # 1 header + N data rows
+        if ws_export.row_count < total_rows:
+            ws_export.resize(rows=total_rows, cols=28)
+            logger.info(f"Dux export: Hoja redimensionada a {total_rows} filas")
+
+        # 7. Sanitizar None → "" (gspread no acepta None en update)
+        all_data = [DUX_HEADERS] + filas_dux
+        sanitized = []
+        for row in all_data:
+            sanitized.append([v if v is not None else "" for v in row])
+        all_data = sanitized
+
+        cell_range = f"A1:AB{total_rows}"
+
+        logger.info(f"Dux export: Escribiendo {len(all_data)} filas en rango {cell_range}")
+        logger.info(f"Dux export: Header (fila 1) = {all_data[0][:5]}... ({len(all_data[0])} cols)")
+        logger.info(f"Dux export: Primera fila datos = {all_data[1][:5]}...")
+
+        # Usar kwargs para compatibilidad gspread v5/v6 (v6 invirtió el orden de args)
+        ws_export.update(range_name=cell_range, values=all_data)
+
+        logger.info(f"Dux export: update() completado OK")
+
+        msg = f"Exportación completada: {len(filas_dux)} filas ENC/DET en EXPORT_DUX"
+        logger.info(msg)
+        return True, msg, len(filas_dux)
+
+    except Exception as e:
+        import traceback
+        err_detail = traceback.format_exc()
+        logger.error(f"Dux export error: {err_detail}")
+        return False, f"Error: {str(e)}\n\nDetalle:\n{err_detail}", 0

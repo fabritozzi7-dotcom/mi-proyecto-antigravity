@@ -553,7 +553,14 @@ if monto_ticket_total == 0 and monto_imputar > 0:
 # --- FOOTER: ACCIÓN FINAL ---
 st.markdown("<br>", unsafe_allow_html=True)
 
-if st.button("💾 Guardar Rendición", type="primary", use_container_width=True):
+# --- DUPLICATE CHECK ---
+is_duplicate = False
+if cuit_input and num_comp_input:
+    is_duplicate = data.check_duplicate_comprobante(cuit_input, pto_vta_input, num_comp_input)
+    if is_duplicate:
+        st.warning("⚠️ Ya existe un comprobante cargado con el mismo CUIT y Número de Comprobante. No se permite duplicar.")
+
+if st.button("💾 Guardar Rendición", type="primary", use_container_width=True, disabled=is_duplicate):
     # Validation
     if not selected_user or not folder_number or not selected_concept:
         st.error("⚠️ Faltan datos obligatorios: Usuario, Carpeta o Concepto.")
@@ -606,6 +613,11 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
                 else:
                     st.error(f"Error subiendo archivo a Drive: {error_msg}")
 
+        # Original amounts (before proration) for CONTROL_SALDOS
+        monto_ticket_total_original = monto_ticket_total
+        monto_neto_original = monto_gravado_total_base
+        no_gravado_original = desglose_base.get("columna_R_no_gravado", 0.0)
+
         # 2. PRORATION LOGIC & SAVE LOOP
         folders = [f.strip() for f in folder_number.split(",") if f.strip()]
         import math
@@ -655,13 +667,22 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
                 "monto_a_imputar": p_monto_imputar,         # Prorated
                 
                 "auditor_desglose": p_desglose,             # Prorated
-                "observaciones": observaciones
+                "observaciones": observaciones,
+
+                # Original amounts (sin prorratear) for CONTROL_SALDOS
+                "monto_ticket_total_original": monto_ticket_total_original,
+                "monto_neto_original": monto_neto_original,
+                "no_gravado_original": no_gravado_original
             }
              
              # Log to GSheets
              try:
                  if data.log_rendicion_to_sheet(payload, ticket_link):
                      success_count += 1
+                     try:
+                         data.actualizar_control_saldos(payload)
+                     except Exception as e:
+                         st.toast(f"⚠️ Error actualizando saldos: {e}")
              except Exception as e:
                  st.error(f"Error guardando carpeta {folder_code}: {e}")
              
@@ -680,3 +701,61 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
             
         else:
             st.warning(f"⚠️ Se guardaron {success_count} de {N} carpetas. Revise la consola.")
+
+
+# ==========================================
+# ADMINISTRACIÓN — EXPORTACIÓN DUX
+# ==========================================
+
+with st.expander("⚙️ Administración (Exportación Dux)", expanded=False):
+    ADMIN_KEY = "expoconsult2026"
+    admin_input = st.text_input("Clave Admin", type="password", key="admin_key_input")
+
+    if admin_input == ADMIN_KEY:
+        st.success("Acceso autorizado")
+
+        # Rango de fechas: default primer y último día del mes actual
+        today = datetime.date.today()
+        first_day = today.replace(day=1)
+        # Último día del mes
+        if today.month == 12:
+            last_day = today.replace(day=31)
+        else:
+            last_day = today.replace(year=today.year if today.month < 12 else today.year + 1,
+                                     month=today.month + 1, day=1) - datetime.timedelta(days=1)
+
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            dux_fecha_desde = st.date_input("Fecha desde", value=first_day, key="dux_fecha_desde")
+        with col_f2:
+            dux_fecha_hasta = st.date_input("Fecha hasta", value=last_day, key="dux_fecha_hasta")
+
+        dux_estado = st.selectbox("Filtrar por estado",
+                                  ["Todos", "CERRADO", "PENDIENTE", "LISTA PARA AJUSTE"],
+                                  key="dux_estado_filter")
+
+        if st.button("📤 Exportar a EXPORT_DUX", type="primary", use_container_width=True):
+            with st.spinner("Generando exportación Dux..."):
+                estado_filtro = None if dux_estado == "Todos" else dux_estado
+                success, msg, count = data.escribir_export_dux_en_sheet(
+                    fecha_desde=dux_fecha_desde,
+                    fecha_hasta=dux_fecha_hasta,
+                    estado=estado_filtro
+                )
+                if success:
+                    st.success(f"✅ {msg}")
+                else:
+                    st.error(f"❌ Error en exportación Dux")
+                    st.code(msg)
+
+        st.markdown("---")
+        if st.button("🔄 Recalcular Saldos", use_container_width=True):
+            with st.spinner("Recalculando saldos..."):
+                success, msg, count = data.recalcular_control_saldos()
+                if success:
+                    st.success(f"✅ {msg}")
+                else:
+                    st.error(f"❌ {msg}")
+
+    elif admin_input:
+        st.error("Clave incorrecta")
