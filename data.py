@@ -13,8 +13,9 @@ logger = logging.getLogger(__name__)
 # 1. LOCAL / STATIC DATA (HYBRID MODEL)
 # ==========================================
 
-# Dict of Users -> Office (HARDCODED SINGLE SOURCE OF TRUTH)
-USUARIOS_DB = {
+# Dict of Users -> Office
+# Fallback list used when the USUARIOS sheet is unavailable or empty
+_USUARIOS_FALLBACK = {
     "MAICO BARROSO": "ALEJANDRO ROCA",
     "SANTIAGO QUIRIGA": "ALEJANDRO ROCA",
     "DANIEL BUSSETTO": "ALEJANDRO ROCA",
@@ -46,6 +47,9 @@ USUARIOS_DB = {
     "GUSTAVO MASTRANGELO": "RIO IV",
     "CRISTIAN SIROLESI": "RIO IV"
 }
+
+# Active dict — starts with fallback, overwritten by sync_data_from_sheets
+USUARIOS_DB = dict(_USUARIOS_FALLBACK)
 
 # Operations (Fixed)
 OPERACIONES_DB = ["Importación", "Exportación"]
@@ -256,7 +260,55 @@ def sync_data_from_sheets():
         except Exception as e:
             logger.warning(f"Could not sync DB_CLIENTE: {e}")
 
-        # 4. Retroactive Validation (New Feature)
+        # 4. USUARIOS -> Update USUARIOS_DB
+        try:
+            logger.info("Syncing USUARIOS...")
+            try:
+                ws_users = sh.worksheet("USUARIOS")
+            except gspread.exceptions.WorksheetNotFound:
+                logger.info("USUARIOS sheet not found — creating it...")
+                ws_users = sh.add_worksheet(title="USUARIOS", rows=100, cols=3)
+                ws_users.update(range_name="A1:C1", values=[["Nombre", "Email", "Oficina"]])
+                # Seed with current fallback data so Fabián has a starting point
+                seed_rows = [[name, "", office] for name, office in _USUARIOS_FALLBACK.items()]
+                if seed_rows:
+                    ws_users.update(range_name=f"A2:C{1 + len(seed_rows)}", values=seed_rows)
+                logger.info(f"USUARIOS sheet created and seeded with {len(seed_rows)} rows")
+
+            rows_users = ws_users.get_all_values()
+            if len(rows_users) > 1:
+                headers_u = [h.lower().strip() for h in rows_users[0]]
+                try:
+                    idx_nombre = headers_u.index("nombre")
+                except ValueError:
+                    idx_nombre = 0
+                try:
+                    idx_oficina_u = headers_u.index("oficina")
+                except ValueError:
+                    idx_oficina_u = 2
+
+                new_usuarios = {}
+                for row in rows_users[1:]:
+                    if len(row) > max(idx_nombre, idx_oficina_u):
+                        nombre = str(row[idx_nombre]).strip().upper()
+                        oficina_u = str(row[idx_oficina_u]).strip().upper()
+                        if nombre and oficina_u:
+                            new_usuarios[nombre] = oficina_u
+
+                if new_usuarios:
+                    global USUARIOS_DB
+                    USUARIOS_DB.clear()
+                    USUARIOS_DB.update(new_usuarios)
+                    logger.info(f"Synced {len(new_usuarios)} users from USUARIOS sheet")
+                else:
+                    logger.warning("USUARIOS sheet has no valid rows — keeping fallback data")
+            else:
+                logger.warning("USUARIOS sheet is empty — keeping fallback data")
+
+        except Exception as e:
+            logger.warning(f"Could not sync USUARIOS: {e} — keeping fallback data")
+
+        # 5. Retroactive Validation (New Feature)
         try:
             count_fixed = _revalidate_log(client, sheet_id if sheet_id else sheet_name, PROVEEDORES_DB)
             if count_fixed > 0:
