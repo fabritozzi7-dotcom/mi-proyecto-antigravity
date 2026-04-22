@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 # Import our data module
 import data
+import notificaciones
 
 # Load environment variables
 load_dotenv()
@@ -272,12 +273,29 @@ with st.container(border=True):
         suggested_amount_concept = data.get_monto_sugerido(selected_concept, office)
     
     # User Input for IMPUTATION (Monto a Imputar)
-    monto_imputar = st.number_input("💵 Monto a Imputar (Usuario)", 
-                                  value=suggested_amount_concept if suggested_amount_concept > 0 else 0.0, 
+    monto_imputar = st.number_input("💵 Monto a Imputar (Usuario)",
+                                  value=suggested_amount_concept if suggested_amount_concept > 0 else 0.0,
                                   step=100.0, format="%.2f",
                                   help="El monto que desea asignar a esta carpeta. Puede diferir del ticket.",
                                   key=f"monto_imputar_{selected_concept}")
-    
+
+    # --- EXCESS DETECTION ---
+    excede_sugerido = False
+    confirma_exceso = False
+    if suggested_amount_concept > 0 and monto_imputar > suggested_amount_concept:
+        excede_sugerido = True
+        diff_exceso = monto_imputar - suggested_amount_concept
+        pct_exceso = (diff_exceso / suggested_amount_concept) * 100
+        st.warning(
+            f"El monto ingresado (${monto_imputar:,.2f}) supera el monto sugerido "
+            f"(${suggested_amount_concept:,.2f}) en **${diff_exceso:,.2f}** ({pct_exceso:.1f}%). "
+            f"La rendición quedará sujeta a revisión."
+        )
+        confirma_exceso = st.checkbox(
+            "Confirmo que esta rendición excede el monto sugerido y quedará sujeta a revisión",
+            key="confirma_exceso"
+        )
+
     # New Field: Observations (Column AD)
     observaciones = st.text_area("📝 Observaciones (Opcional)", placeholder="Detalles adicionales, número de guía, etc...", height=80, key="obs_input")
 
@@ -558,7 +576,10 @@ if cuit_input and num_comp_input:
     if is_duplicate:
         st.warning("⚠️ Ya existe un comprobante cargado con el mismo CUIT y Número de Comprobante. No se permite duplicar.")
 
-if st.button("💾 Guardar Rendición", type="primary", use_container_width=True, disabled=is_duplicate):
+# Disable save if: duplicate, or excess not confirmed
+save_disabled = is_duplicate or (excede_sugerido and not confirma_exceso)
+
+if st.button("💾 Guardar Rendición", type="primary", use_container_width=True, disabled=save_disabled):
     # Validation
     if not selected_user or not folder_number or not selected_concept:
         st.error("⚠️ Faltan datos obligatorios: Usuario, Carpeta o Concepto.")
@@ -673,9 +694,12 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
                 "no_gravado_original": no_gravado_original
             }
              
+             # Determine estado override for excess
+             estado_ov = "PENDIENTE REVISIÓN" if excede_sugerido else None
+
              # Log to GSheets
              try:
-                 if data.log_rendicion_to_sheet(payload, ticket_link):
+                 if data.log_rendicion_to_sheet(payload, ticket_link, estado_override=estado_ov):
                      success_count += 1
                      try:
                          data.actualizar_control_saldos(payload)
@@ -683,18 +707,51 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
                          st.toast(f"⚠️ Error actualizando saldos: {e}")
              except Exception as e:
                  st.error(f"Error guardando carpeta {folder_code}: {e}")
-             
+
              progress_bar.progress((idx + 1) / N)
 
         if success_count == N:
-            st.toast(f"✅ Rendición guardada exitosamente en {N} carpetas.")
+            if excede_sugerido:
+                st.success(
+                    f"Rendición guardada en {N} carpeta(s) con estado **PENDIENTE REVISIÓN**. "
+                    f"Los autorizantes serán notificados."
+                )
+            else:
+                st.toast(f"Rendición guardada exitosamente en {N} carpetas.")
+
+            # Send email notification if excess (idempotent via session flag)
+            mail_flag = f"_mail_sent_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+            if excede_sugerido and mail_flag not in st.session_state:
+                st.session_state[mail_flag] = True
+                try:
+                    gsheets_client, _ = data.get_gsheets_client()
+                    sheet_id = os.getenv("GSHEET_ID", "")
+                    try:
+                        if "GSHEET_ID" in st.secrets:
+                            sheet_id = st.secrets["GSHEET_ID"]
+                    except Exception:
+                        pass
+                    if gsheets_client and sheet_id:
+                        # Use last payload (representative for the mail)
+                        mail_ok, mail_msg = notificaciones.enviar_alerta_exceso(
+                            payload, ticket_link, gsheets_client, sheet_id
+                        )
+                        if not mail_ok:
+                            st.warning(
+                                "La rendición se guardó. No se pudo enviar la notificación "
+                                f"automática, contactá a administración. ({mail_msg})"
+                            )
+                except Exception as e:
+                    st.warning(
+                        "La rendición se guardó. No se pudo enviar la notificación "
+                        f"automática, contactá a administración. ({e})"
+                    )
+
             # Set reset flag for NEXT run
             st.session_state.needs_reset = True
-            
-            # Show a success modal or temporary message if needed, 
-            # but st.toast + st.rerun is the cleanest "Guardar y Nuevo" UX.
+
             import time
-            time.sleep(1.0) 
+            time.sleep(1.5 if excede_sugerido else 1.0)
             st.rerun()
             
         else:
