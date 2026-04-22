@@ -256,22 +256,20 @@ with st.container(border=True):
         client = st.selectbox("Cliente", data.CLIENTES_DB, index=None, placeholder="Buscar Cliente...")
     
     st.markdown("### Concepto")
-    # Filter concepts by Office
-    all_concepts = sorted(list(data.CONCEPTOS_DB.keys()))
+    # Filter concepts by Office (uses composite key mapping)
     if office:
-        # Filter: Keep if office is 'Todas', '---', or matches User's Office
-        concepts_list = [c for c in all_concepts if data.CONCEPTOS_OFICINA_DB.get(c, "Todas") in ["Todas", "---", office]]
+        concepts_list = data.get_conceptos_para_oficina(office)
         st.caption(f"🔍 Mostrando {len(concepts_list)} conceptos para oficina: **{office}**")
     else:
-        concepts_list = all_concepts
+        concepts_list = sorted(list(data.CONCEPTOS_DB.keys()))
         st.caption("🔍 Mostrando todos los conceptos (Sin filtro de oficina)")
-        
+
     selected_concept = st.selectbox("Seleccionar Concepto", concepts_list, index=None, label_visibility="collapsed", placeholder="Escribe para buscar...", key="concept_input")
-    
-    # Auto-fill logic
+
+    # Auto-fill logic (uses office-aware lookup)
     suggested_amount_concept = 0.0
     if selected_concept:
-        suggested_amount_concept = data.CONCEPTOS_DB.get(selected_concept, 0.0)
+        suggested_amount_concept = data.get_monto_sugerido(selected_concept, office)
     
     # User Input for IMPUTATION (Monto a Imputar)
     monto_imputar = st.number_input("💵 Monto a Imputar (Usuario)", 

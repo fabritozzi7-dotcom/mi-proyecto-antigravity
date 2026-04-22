@@ -72,6 +72,43 @@ CONCEPTOS_DB = {}
 # Metadata for concepts (e.g., Office filter)
 CONCEPTOS_OFICINA_DB = {}
 
+# Full mapping: (concepto, oficina) -> monto sugerido
+# Supports same concept with different amounts per office
+CONCEPTOS_MONTO_POR_OFICINA = {}
+
+
+def get_monto_sugerido(concepto, oficina):
+    """Look up monto sugerido by (concepto, oficina) with fallback.
+
+    Priority:
+    1. Exact match (concepto, oficina)
+    2. Generic match (concepto, "Todas")
+    3. Any entry for this concepto (first found)
+    4. 0.0
+    """
+    # Exact match
+    monto = CONCEPTOS_MONTO_POR_OFICINA.get((concepto, oficina))
+    if monto is not None:
+        return monto
+    # Generic "Todas"
+    monto = CONCEPTOS_MONTO_POR_OFICINA.get((concepto, "Todas"))
+    if monto is not None:
+        return monto
+    # Fallback: any entry for this concept
+    for (c, o), m in CONCEPTOS_MONTO_POR_OFICINA.items():
+        if c == concepto:
+            return m
+    return 0.0
+
+
+def get_conceptos_para_oficina(oficina):
+    """Returns sorted list of concept names available for an office."""
+    result = set()
+    for (conc, ofi) in CONCEPTOS_MONTO_POR_OFICINA:
+        if ofi in ("Todas", "---") or ofi == oficina or not oficina:
+            result.add(conc)
+    return sorted(result)
+
 # Providers DB (Partial/Fallback)
 # In production, this can be huge. We try to load from providers.txt first.
 PROVEEDORES_DB = {}
@@ -187,14 +224,15 @@ def sync_data_from_sheets():
 
             new_conceptos = {}
             new_oficinas = {}
+            new_monto_por_oficina = {}
 
             for row in rows[1:]:
                 if len(row) > idx_monto:
                     conc = str(row[idx_concepto]).strip()
-                    if not conc: continue 
-                    
+                    if not conc: continue
+
                     raw_val = row[idx_monto]
-                    
+
                     # Office parsing
                     oficina = "Todas"
                     if idx_oficina != -1 and len(row) > idx_oficina:
@@ -209,16 +247,21 @@ def sync_data_from_sheets():
                             monto = float(clean_val)
                         except:
                             monto = 0.0
-                    
+
                     new_conceptos[conc] = monto
                     new_oficinas[conc] = oficina
-            
-            global CONCEPTOS_DB, CONCEPTOS_OFICINA_DB
+                    # Full mapping with composite key (concepto, oficina)
+                    new_monto_por_oficina[(conc, oficina)] = monto
+
+            global CONCEPTOS_DB, CONCEPTOS_OFICINA_DB, CONCEPTOS_MONTO_POR_OFICINA
             CONCEPTOS_DB.clear()
             CONCEPTOS_DB.update(new_conceptos)
-            
+
             CONCEPTOS_OFICINA_DB.clear()
             CONCEPTOS_OFICINA_DB.update(new_oficinas)
+
+            CONCEPTOS_MONTO_POR_OFICINA.clear()
+            CONCEPTOS_MONTO_POR_OFICINA.update(new_monto_por_oficina)
                             
             logger.info("Synced CONCEPTOS_DB from Sheets")
         except Exception as e:
@@ -315,6 +358,13 @@ def sync_data_from_sheets():
                 logger.info(f"Retro-validation: {count_fixed} rows updated to 'Sí'")
         except Exception as e:
             logger.error(f"Retro-validation error: {e}")
+
+        # 6. CONFIG_NOTIFICACIONES — Create if missing (same pattern as USUARIOS)
+        try:
+            from notificaciones import crear_hoja_config_notificaciones
+            crear_hoja_config_notificaciones(sh)
+        except Exception as e:
+            logger.warning(f"Could not ensure CONFIG_NOTIFICACIONES: {e}")
 
         return True, "Sync OK"
 
