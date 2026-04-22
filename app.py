@@ -786,7 +786,8 @@ with st.expander("⚙️ Administración (Exportación Dux)", expanded=False):
             dux_fecha_hasta = st.date_input("Fecha hasta", value=last_day, key="dux_fecha_hasta")
 
         dux_estado = st.selectbox("Filtrar por estado",
-                                  ["Todos", "CERRADO", "PENDIENTE", "LISTA PARA AJUSTE"],
+                                  ["Todos", "CERRADO", "PENDIENTE", "LISTA PARA AJUSTE",
+                                   "PENDIENTE REVISIÓN", "RECHAZADO"],
                                   key="dux_estado_filter")
 
         if st.button("📤 Exportar a EXPORT_DUX", type="primary", use_container_width=True):
@@ -811,6 +812,102 @@ with st.expander("⚙️ Administración (Exportación Dux)", expanded=False):
                     st.success(f"✅ {msg}")
                 else:
                     st.error(f"❌ {msg}")
+
+        # ==========================================
+        # REVISIÓN DE EXCESOS
+        # ==========================================
+        st.markdown("---")
+        st.subheader("Revisión de Excesos")
+
+        admin_name = st.text_input("Nombre del revisor", placeholder="Ej: Juan Pablo Mastrangelo", key="admin_reviewer_name")
+
+        if st.button("Cargar pendientes de revisión", use_container_width=True, key="btn_load_pendientes"):
+            with st.spinner("Leyendo rendiciones pendientes..."):
+                st.session_state["pendientes_revision"] = data.leer_pendientes_revision()
+
+        pendientes = st.session_state.get("pendientes_revision", [])
+
+        if pendientes:
+            # Filters
+            col_rf1, col_rf2, col_rf3 = st.columns(3)
+            with col_rf1:
+                fechas_disponibles = sorted(set(p["fecha"] for p in pendientes))
+                rev_fecha_desde = st.date_input("Desde", value=None, key="rev_fecha_desde")
+            with col_rf2:
+                rev_fecha_hasta = st.date_input("Hasta", value=None, key="rev_fecha_hasta")
+            with col_rf3:
+                oficinas_disp = sorted(set(p["oficina"] for p in pendientes))
+                rev_oficina = st.selectbox("Oficina", ["Todas"] + oficinas_disp, key="rev_oficina_filter")
+
+            # Apply filters
+            filtered = pendientes
+            if rev_fecha_desde:
+                filtered = [p for p in filtered if str(p["fecha"])[:10] >= rev_fecha_desde.isoformat()]
+            if rev_fecha_hasta:
+                filtered = [p for p in filtered if str(p["fecha"])[:10] <= rev_fecha_hasta.isoformat()]
+            if rev_oficina and rev_oficina != "Todas":
+                filtered = [p for p in filtered if p["oficina"] == rev_oficina]
+
+            st.caption(f"Mostrando {len(filtered)} de {len(pendientes)} pendientes")
+
+            for i, pend in enumerate(filtered):
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{pend['usuario']}** — {pend['oficina']} — {pend['fecha']}"
+                    )
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Concepto", pend["concepto"])
+                    c2.metric("Monto Imputado", f"${float(pend.get('monto_imputar', 0) or 0):,.2f}")
+                    c3.metric("Monto Sugerido", f"${float(pend.get('monto_sugerido', 0) or 0):,.2f}")
+
+                    st.caption(f"Carpeta: {pend['numero_carpeta']} | CUIT: {pend['proveedor_cuit']}")
+
+                    if pend.get("ticket_url"):
+                        st.markdown(f"[Ver comprobante]({pend['ticket_url']})")
+
+                    col_a, col_r = st.columns(2)
+                    with col_a:
+                        if st.button("Aprobar", key=f"aprobar_{pend['row_idx']}_{i}", type="primary"):
+                            if not admin_name:
+                                st.error("Ingresá tu nombre de revisor")
+                            else:
+                                ok, msg = data.aprobar_rendicion(pend["row_idx"], admin_name)
+                                if ok:
+                                    st.success(f"Aprobada: {msg}")
+                                    # Remove from local list
+                                    st.session_state["pendientes_revision"] = [
+                                        p for p in st.session_state["pendientes_revision"]
+                                        if p["row_idx"] != pend["row_idx"]
+                                    ]
+                                    st.rerun()
+                                else:
+                                    st.error(f"Error: {msg}")
+
+                    with col_r:
+                        motivo = st.text_area(
+                            "Motivo de rechazo",
+                            placeholder="Obligatorio para rechazar",
+                            key=f"motivo_{pend['row_idx']}_{i}",
+                            height=68
+                        )
+                        if st.button("Rechazar", key=f"rechazar_{pend['row_idx']}_{i}", type="secondary"):
+                            if not admin_name:
+                                st.error("Ingresá tu nombre de revisor")
+                            elif not motivo or not motivo.strip():
+                                st.error("El motivo de rechazo es obligatorio")
+                            else:
+                                ok, msg = data.rechazar_rendicion(pend["row_idx"], admin_name, motivo.strip())
+                                if ok:
+                                    st.success(f"Rechazada: {msg}")
+                                    st.session_state["pendientes_revision"] = [
+                                        p for p in st.session_state["pendientes_revision"]
+                                        if p["row_idx"] != pend["row_idx"]
+                                    ]
+                                    st.rerun()
+                                else:
+                                    st.error(f"Error: {msg}")
+        elif "pendientes_revision" in st.session_state:
+            st.info("No hay rendiciones pendientes de revisión.")
 
     elif admin_input:
         st.error("Clave incorrecta")
