@@ -90,6 +90,9 @@ HEADER_MAP = [
     "estado",              # 28 (AC)
     "clave_maestra",       # 29 (AD)
     "observaciones",       # 30 (AE)
+    "motivo_rechazo",      # 31 (AF)
+    "revisado_por",        # 32 (AG)
+    "fecha_revision",      # 33 (AH)
 ]
 
 DUX_HEADERS = [

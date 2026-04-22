@@ -486,9 +486,15 @@ def find_available_invoice_balance(cuit_provider, amount_needed):
         logger.warning(f"Error searching balances: {e}")
         return None
 
-def log_rendicion_to_sheet(payload, ticket_url=""):
+def log_rendicion_to_sheet(payload, ticket_url="", estado_override=None):
     """
     Appends a new row to RENDICIONES_LOG tab with updated columns.
+
+    Args:
+        payload: dict with rendition data.
+        ticket_url: URL of uploaded receipt in Drive.
+        estado_override: if set, overrides the Puchito-calculated estado
+                         (e.g. "PENDIENTE REVISIÓN" for excess amounts).
     """
     client, email = get_gsheets_client()
     if not client:
@@ -530,13 +536,14 @@ def log_rendicion_to_sheet(payload, ticket_url=""):
         monto_imputar = payload.get("monto_a_imputar", 0.0)
         
         saldo_pendiente = abs(monto_ticket - monto_imputar)
-        estado_saldo = ""
-        if saldo_pendiente < 1000.0 and saldo_pendiente > 0:
+        if estado_override:
+            estado_saldo = estado_override
+        elif saldo_pendiente < 1000.0 and saldo_pendiente > 0:
             estado_saldo = "LISTA PARA AJUSTE"
         elif saldo_pendiente > 0:
-             estado_saldo = "PENDIENTE"
+            estado_saldo = "PENDIENTE"
         else:
-             estado_saldo = "CERRADO"
+            estado_saldo = "CERRADO"
              
         # Clave Maestra (Requested for Control Saldos)
         cuit = str(payload.get("proveedor_cuit", "")).strip()
@@ -601,9 +608,14 @@ def log_rendicion_to_sheet(payload, ticket_url=""):
             ticket_url,                                 # 28 (AB). Ticket URL
             estado_saldo,                               # 29 (AC). Estado (Puchito)
             clave_unica,                                # 30 (AD). Clave Maestra
-            payload.get("observaciones", "")            # 31 (AE). Observaciones
+            payload.get("observaciones", ""),            # 31 (AE). Observaciones
+
+            # --- AUDIT COLUMNS (AF-AH) ---
+            "",                                         # 32 (AF). Motivo_Rechazo
+            "",                                         # 33 (AG). Revisado_Por
+            "",                                         # 34 (AH). Fecha_Revision
         ]
-        
+
         ws_log.append_row(row)
         return True
     except Exception as e:
@@ -945,7 +957,238 @@ def _revalidate_log(client, sheet_key, providers_db):
 
 
 # ==========================================
-# 4. EXPORTACIÓN DUX
+# 4. REVISIÓN DE EXCESOS
+# ==========================================
+
+
+def _get_sheet_handle():
+    """Helper: returns (gspread_client, spreadsheet_handle) or raises."""
+    client, email = get_gsheets_client()
+    if not client:
+        raise RuntimeError(f"No credentials. Email: {email}")
+
+    sheet_id = os.getenv("GSHEET_ID")
+    sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
+    try:
+        if "GSHEET_ID" in st.secrets:
+            sheet_id = st.secrets["GSHEET_ID"]
+        if "GSHEET_NAME" in st.secrets:
+            sheet_name = st.secrets["GSHEET_NAME"]
+    except Exception:
+        pass
+
+    if sheet_id:
+        sh = client.open_by_key(sheet_id)
+    else:
+        sh = client.open(sheet_name)
+    return client, sh
+
+
+def leer_pendientes_revision():
+    """Lee RENDICIONES_LOG y devuelve filas con estado PENDIENTE REVISIÓN.
+
+    Returns:
+        list[dict]: cada dict tiene keys: row_idx (1-based sheet row),
+        id_operacion, fecha, usuario, oficina, numero_carpeta,
+        concepto, monto_sugerido, monto_imputar, proveedor_cuit,
+        proveedor_nombre, ticket_url, estado.
+    """
+    try:
+        _, sh = _get_sheet_handle()
+        ws = sh.worksheet("RENDICIONES_LOG")
+        all_rows = ws.get_all_values()
+
+        if len(all_rows) < 2:
+            return []
+
+        results = []
+        for i, row in enumerate(all_rows):
+            if i == 0:
+                continue  # header
+            if len(row) < 31:
+                continue
+
+            estado = str(row[28]).strip()  # AC = index 28
+            if estado != "PENDIENTE REVISIÓN":
+                continue
+
+            results.append({
+                "row_idx": i + 1,  # 1-based for gspread
+                "id_operacion": row[0],
+                "fecha": row[1],
+                "usuario": row[2],
+                "oficina": row[3],
+                "numero_carpeta": row[4],
+                "concepto": row[7],
+                "monto_sugerido": row[8],
+                "tipo_factura": row[9],
+                "sucursal": row[11],
+                "numero_factura": row[12],
+                "proveedor_cuit": row[15],
+                "proveedor_nombre": "",  # not stored directly — use CUIT lookup
+                "monto_total_ticket": row[25],
+                "monto_imputar": row[26],
+                "ticket_url": row[27],
+                "estado": estado,
+            })
+
+        return results
+    except Exception as e:
+        logger.error(f"Error reading pending reviews: {e}")
+        return []
+
+
+def aprobar_rendicion(row_idx, admin_user):
+    """Aprueba una rendición en PENDIENTE REVISIÓN.
+
+    Recalcula el estado usando la regla del Puchito y escribe las columnas
+    de auditoría (Revisado_Por, Fecha_Revision).
+
+    Args:
+        row_idx: 1-based row index in RENDICIONES_LOG.
+        admin_user: name of the admin who approved.
+
+    Returns:
+        (bool, str): (success, message)
+    """
+    try:
+        _, sh = _get_sheet_handle()
+        ws = sh.worksheet("RENDICIONES_LOG")
+
+        row = ws.row_values(row_idx)
+        if len(row) < 29 or str(row[28]).strip() != "PENDIENTE REVISIÓN":
+            return False, "La fila no está en estado PENDIENTE REVISIÓN"
+
+        # Recalculate estado using Puchito rule
+        monto_ticket = safe_float(row[25])    # Z: Monto Total Ticket
+        monto_imputar = safe_float(row[26])   # AA: Monto a Imputar
+        saldo_pendiente = abs(monto_ticket - monto_imputar)
+
+        if saldo_pendiente == 0:
+            nuevo_estado = "CERRADO"
+        elif saldo_pendiente < 1000:
+            nuevo_estado = "LISTA PARA AJUSTE"
+        else:
+            nuevo_estado = "PENDIENTE"
+
+        fecha_rev = datetime.now().isoformat()
+
+        ws.batch_update([
+            {"range": f"AC{row_idx}", "values": [[nuevo_estado]]},
+            {"range": f"AG{row_idx}", "values": [[admin_user]]},
+            {"range": f"AH{row_idx}", "values": [[fecha_rev]]},
+        ])
+
+        logger.info(f"Rendición {row_idx} aprobada -> {nuevo_estado} por {admin_user}")
+        return True, f"Aprobada -> {nuevo_estado}"
+
+    except Exception as e:
+        logger.error(f"Error approving rendition {row_idx}: {e}")
+        return False, str(e)
+
+
+def rechazar_rendicion(row_idx, admin_user, motivo):
+    """Rechaza una rendición en PENDIENTE REVISIÓN.
+
+    Sets estado to RECHAZADO, writes motivo and audit columns.
+    Also reverts the imputación in CONTROL_SALDOS atomically.
+
+    Args:
+        row_idx: 1-based row index in RENDICIONES_LOG.
+        admin_user: name of the admin who rejected.
+        motivo: mandatory rejection reason.
+
+    Returns:
+        (bool, str): (success, message)
+    """
+    try:
+        _, sh = _get_sheet_handle()
+        ws_log = sh.worksheet("RENDICIONES_LOG")
+
+        row = ws_log.row_values(row_idx)
+        if len(row) < 29 or str(row[28]).strip() != "PENDIENTE REVISIÓN":
+            return False, "La fila no está en estado PENDIENTE REVISIÓN"
+
+        # Extract data needed to revert CONTROL_SALDOS
+        cuit = str(row[15]).strip()
+        suc_raw = str(row[11]).strip()
+        num_raw = str(row[12]).strip()
+        suc = suc_raw.zfill(5) if suc_raw.isdigit() else suc_raw
+        num = num_raw.zfill(8) if num_raw.isdigit() else num_raw
+        id_factura = f"{suc}{num}"
+        monto_a_revertir = safe_float(row[26])  # AA: Monto a Imputar
+
+        # Step 1: Revert CONTROL_SALDOS
+        revert_ok = _revertir_imputacion_saldos(sh, cuit, id_factura, monto_a_revertir)
+        if not revert_ok:
+            return False, "No se pudo revertir la imputación en CONTROL_SALDOS. El estado no fue modificado."
+
+        # Step 2: Update RENDICIONES_LOG (only if revert succeeded)
+        fecha_rev = datetime.now().isoformat()
+        try:
+            ws_log.batch_update([
+                {"range": f"AC{row_idx}", "values": [["RECHAZADO"]]},
+                {"range": f"AF{row_idx}", "values": [[motivo]]},
+                {"range": f"AG{row_idx}", "values": [[admin_user]]},
+                {"range": f"AH{row_idx}", "values": [[fecha_rev]]},
+            ])
+        except Exception as e:
+            # Revert already happened — log the inconsistency
+            logger.error(f"CRITICAL: CONTROL_SALDOS reverted but RENDICIONES_LOG update failed for row {row_idx}: {e}")
+            return False, f"Se revirtió el saldo pero falló actualizar el log: {e}"
+
+        logger.info(f"Rendición {row_idx} rechazada por {admin_user}: {motivo}")
+        return True, "Rechazada y saldo revertido"
+
+    except Exception as e:
+        logger.error(f"Error rejecting rendition {row_idx}: {e}")
+        return False, str(e)
+
+
+def _revertir_imputacion_saldos(sh, cuit, id_factura, monto_a_revertir):
+    """Reverts an imputación in CONTROL_SALDOS by subtracting the amount.
+
+    Returns True on success, False on failure.
+    """
+    try:
+        ws = sh.worksheet("CONTROL_SALDOS")
+        all_values = ws.get_all_values()
+
+        for i, row in enumerate(all_values):
+            if i == 0:
+                continue
+            if len(row) < 2:
+                continue
+            row_cuit = str(row[0]).strip()
+            row_id = str(row[1]).strip()
+            if row_cuit == cuit and row_id == id_factura:
+                fila_idx = i + 1
+                respaldo = safe_float(row[2]) if len(row) > 2 else 0.0
+                total_imputado = safe_float(row[3]) if len(row) > 3 else 0.0
+
+                total_imputado = max(0, total_imputado - monto_a_revertir)
+                saldo = respaldo - total_imputado
+                estado = _calcular_estado_saldo(saldo)
+
+                ws.batch_update([
+                    {"range": f"D{fila_idx}", "values": [[round(total_imputado, 2)]]},
+                    {"range": f"E{fila_idx}", "values": [[round(saldo, 2)]]},
+                    {"range": f"F{fila_idx}", "values": [[estado]]},
+                ])
+                logger.info(f"CONTROL_SALDOS reverted: {id_factura} imputado={total_imputado} saldo={saldo}")
+                return True
+
+        # No matching row found — might be a manual entry without CONTROL_SALDOS
+        logger.warning(f"No CONTROL_SALDOS row for CUIT={cuit} ID={id_factura} — skipping revert")
+        return True  # Not an error, just no balance row to revert
+
+    except Exception as e:
+        logger.error(f"Error reverting CONTROL_SALDOS: {e}")
+        return False
+
+
+# ==========================================
+# 5. EXPORTACIÓN DUX
 # ==========================================
 
 from dux_export import agrupar_por_comprobante, generar_filas_dux, DUX_HEADERS, safe_float
@@ -1037,6 +1280,9 @@ def escribir_export_dux_en_sheet(fecha_desde=None, fecha_hasta=None, estado=None
             "Estado": "estado",
             "Clave Maestra": "clave_maestra",
             "Observaciones": "observaciones",
+            "Motivo_Rechazo": "motivo_rechazo",
+            "Revisado_Por": "revisado_por",
+            "Fecha_Revision": "fecha_revision",
         }
 
         rendiciones = []
