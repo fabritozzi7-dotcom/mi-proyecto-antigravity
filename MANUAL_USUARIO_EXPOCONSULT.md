@@ -118,6 +118,56 @@ Significa que ese comprobante ya fue registrado en el sistema anteriormente. Est
 
 ---
 
+## 5. Control de montos que superan el sugerido
+
+Cada concepto de gasto tiene un **monto sugerido** definido por oficina. Si al cargar una rendicion el monto a imputar supera el sugerido, el sistema activa un control adicional.
+
+### Que pasa cuando el monto excede
+
+1. Aparece un **cartel amarillo** que muestra: el monto sugerido, el monto ingresado, la diferencia en pesos y en porcentaje.
+2. Se habilita un **checkbox obligatorio**: *"Confirmo que esta rendicion excede el monto sugerido y quedara sujeta a revision"*. Hay que tildarlo para poder guardar.
+3. Al guardar, la rendicion queda con estado **PENDIENTE REVISION** (en lugar de CERRADO o PENDIENTE).
+4. Se **envia un mail automatico** a los autorizantes con todos los datos de la rendicion y un link al comprobante.
+
+### Que tiene que hacer el operador
+
+- Revisar que el monto sea correcto.
+- Tildar el checkbox de confirmacion.
+- Guardar normalmente. La rendicion se guarda y no se pierde.
+- Un administrador revisara la rendicion desde el panel de administracion.
+
+### Si no se puede enviar el mail
+
+La rendicion se guarda igual. Aparece un aviso discreto indicando que la notificacion no se pudo enviar. En ese caso, avisar al area de administracion manualmente.
+
+---
+
+## 6. Panel de revision de excesos (Administradores)
+
+Dentro de la seccion **Administracion** (requiere clave admin), hay una subseccion llamada **"Revision de Excesos"**.
+
+### Como funciona
+
+1. Ingresar la **clave de administracion**.
+2. Escribir el **nombre del revisor** en el campo correspondiente.
+3. Hacer clic en **"Cargar pendientes de revision"**.
+4. Aparece la lista de rendiciones con estado PENDIENTE REVISION.
+5. Se pueden filtrar por **fecha** y **oficina**.
+
+### Acciones disponibles por rendicion
+
+- **Aprobar**: La rendicion pasa al estado que le corresponde segun la regla del saldo (CERRADO, LISTA PARA AJUSTE o PENDIENTE). Se registra quien aprobo y cuando.
+- **Rechazar**: Se debe ingresar un **motivo de rechazo** (obligatorio). La rendicion pasa a estado RECHAZADO y se revierte la imputacion en el control de saldos, liberando el monto para futuras rendiciones. Se registra quien rechazo, cuando, y el motivo.
+
+### Columnas de auditoria
+
+Cada accion de revision queda registrada en la planilla con:
+- **Revisado_Por**: nombre del administrador.
+- **Fecha_Revision**: fecha y hora de la accion.
+- **Motivo_Rechazo**: motivo (solo en rechazos).
+
+---
+
 ## Resumen rapido del flujo
 
 ```
@@ -134,6 +184,14 @@ Revision de datos (corregir si hace falta)
         |
         v
 Guardar Rendicion
+        |
+        +--> Monto <= sugerido --> CERRADO / PENDIENTE / LISTA PARA AJUSTE
+        |
+        +--> Monto > sugerido --> PENDIENTE REVISION
+                                    |
+                                    +--> Admin Aprueba --> CERRADO / PENDIENTE / LISTA PARA AJUSTE
+                                    |
+                                    +--> Admin Rechaza --> RECHAZADO (saldo revertido)
 ```
 
 Ante cualquier duda, consultar con el area de Administracion.
