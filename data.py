@@ -1056,8 +1056,10 @@ def aprobar_rendicion(row_idx, admin_user):
         ws = sh.worksheet("RENDICIONES_LOG")
 
         row = ws.row_values(row_idx)
-        if len(row) < 29 or str(row[28]).strip() != "PENDIENTE REVISIÓN":
-            return False, "La fila no está en estado PENDIENTE REVISIÓN"
+        estado_actual = str(row[28]).strip() if len(row) > 28 else ""
+        if estado_actual != "PENDIENTE REVISIÓN":
+            revisado_por = str(row[32]).strip() if len(row) > 32 else "desconocido"
+            return False, f"Esta rendición ya fue procesada (estado: {estado_actual}, por: {revisado_por})"
 
         # Recalculate estado using Puchito rule
         monto_ticket = safe_float(row[25])    # Z: Monto Total Ticket
@@ -1106,8 +1108,10 @@ def rechazar_rendicion(row_idx, admin_user, motivo):
         ws_log = sh.worksheet("RENDICIONES_LOG")
 
         row = ws_log.row_values(row_idx)
-        if len(row) < 29 or str(row[28]).strip() != "PENDIENTE REVISIÓN":
-            return False, "La fila no está en estado PENDIENTE REVISIÓN"
+        estado_actual = str(row[28]).strip() if len(row) > 28 else ""
+        if estado_actual != "PENDIENTE REVISIÓN":
+            revisado_por = str(row[32]).strip() if len(row) > 32 else "desconocido"
+            return False, f"Esta rendición ya fue procesada (estado: {estado_actual}, por: {revisado_por})"
 
         # Extract data needed to revert CONTROL_SALDOS
         cuit = str(row[15]).strip()

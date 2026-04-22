@@ -720,9 +720,10 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
                 st.toast(f"Rendición guardada exitosamente en {N} carpetas.")
 
             # Send email notification if excess (idempotent via session flag)
-            mail_flag = f"_mail_sent_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
-            if excede_sugerido and mail_flag not in st.session_state:
-                st.session_state[mail_flag] = True
+            # Use folder+concept+amount as stable key so F5 doesn't re-send
+            mail_key = f"_mail_sent_{folder_number}_{selected_concept}_{monto_imputar}"
+            if excede_sugerido and mail_key not in st.session_state:
+                st.session_state[mail_key] = True
                 try:
                     gsheets_client, _ = data.get_gsheets_client()
                     sheet_id = os.getenv("GSHEET_ID", "")
