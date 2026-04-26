@@ -264,6 +264,183 @@ def asegurar_columna_codigo_dux_usuarios(sh):
 
 
 # ==========================================
+# 1c. DUX CACHED LOOKUPS
+# ==========================================
+
+
+@st.cache_data(ttl=300)
+def _leer_maestro_conceptos_dux(_client, sheet_id):
+    """Reads MAESTRO_CONCEPTOS_DUX and returns {concepto_interno_upper: codigo_dux_int}."""
+    try:
+        sh = _client.open_by_key(sheet_id)
+        ws = sh.worksheet("MAESTRO_CONCEPTOS_DUX")
+        rows = ws.get_all_values()
+        if len(rows) < 2:
+            return {}
+        headers = [h.lower().strip() for h in rows[0]]
+        try:
+            idx_interno = headers.index("concepto_interno")
+            idx_codigo = headers.index("codigo_dux")
+        except ValueError:
+            idx_interno, idx_codigo = 0, 1
+
+        result = {}
+        for row in rows[1:]:
+            if len(row) > max(idx_interno, idx_codigo):
+                interno = str(row[idx_interno]).strip()
+                codigo_raw = str(row[idx_codigo]).strip()
+                if interno and codigo_raw:
+                    try:
+                        result[interno.upper()] = int(float(codigo_raw))
+                    except (ValueError, TypeError):
+                        pass
+        return result
+    except Exception as e:
+        logger.error(f"Error reading MAESTRO_CONCEPTOS_DUX: {e}")
+        return {}
+
+
+@st.cache_data(ttl=300)
+def _leer_codigos_empleado_dux(_client, sheet_id):
+    """Reads USUARIOS and returns {nombre_upper: codigo_dux_int}."""
+    try:
+        sh = _client.open_by_key(sheet_id)
+        ws = sh.worksheet("USUARIOS")
+        rows = ws.get_all_values()
+        if len(rows) < 2:
+            return {}
+        headers = [h.lower().strip() for h in rows[0]]
+        try:
+            idx_nombre = headers.index("nombre")
+        except ValueError:
+            idx_nombre = 0
+        try:
+            idx_codigo = headers.index("codigo_dux")
+        except ValueError:
+            return {}  # Column doesn't exist yet
+
+        result = {}
+        for row in rows[1:]:
+            if len(row) > max(idx_nombre, idx_codigo):
+                nombre = str(row[idx_nombre]).strip().upper()
+                codigo_raw = str(row[idx_codigo]).strip()
+                if nombre and codigo_raw:
+                    try:
+                        result[nombre] = int(float(codigo_raw))
+                    except (ValueError, TypeError):
+                        pass
+        return result
+    except Exception as e:
+        logger.error(f"Error reading USUARIOS for DUX codes: {e}")
+        return {}
+
+
+@st.cache_data(ttl=300)
+def _leer_config_empresa(_client, sheet_id):
+    """Reads CONFIG_EMPRESA and returns {clave_upper: valor}."""
+    try:
+        sh = _client.open_by_key(sheet_id)
+        ws = sh.worksheet("CONFIG_EMPRESA")
+        rows = ws.get_all_values()
+        if len(rows) < 2:
+            return {}
+        result = {}
+        for row in rows[1:]:
+            if len(row) >= 2:
+                clave = str(row[0]).strip().upper()
+                valor = str(row[1]).strip()
+                if clave:
+                    result[clave] = valor
+        return result
+    except Exception as e:
+        logger.error(f"Error reading CONFIG_EMPRESA: {e}")
+        return {}
+
+
+def _get_sheet_id():
+    """Returns the configured spreadsheet ID."""
+    sheet_id = os.getenv("GSHEET_ID", "")
+    try:
+        if "GSHEET_ID" in st.secrets:
+            sheet_id = st.secrets["GSHEET_ID"]
+    except Exception:
+        pass
+    return sheet_id
+
+
+def get_codigo_concepto_dux(concepto_interno):
+    """Look up DUX concept code by internal concept name.
+
+    Returns:
+        int or None: DUX code, or None if not mapped.
+    """
+    client, _ = get_gsheets_client()
+    if not client:
+        return None
+    sheet_id = _get_sheet_id()
+    if not sheet_id:
+        return None
+    mapping = _leer_maestro_conceptos_dux(client, sheet_id)
+    return mapping.get(str(concepto_interno).strip().upper())
+
+
+def get_codigo_empleado_dux(usuario):
+    """Look up DUX employee (treasury) code by user name.
+
+    Returns:
+        int or None: DUX code, or None if not mapped.
+    """
+    client, _ = get_gsheets_client()
+    if not client:
+        return None
+    sheet_id = _get_sheet_id()
+    if not sheet_id:
+        return None
+    mapping = _leer_codigos_empleado_dux(client, sheet_id)
+    return mapping.get(str(usuario).strip().upper())
+
+
+def get_cuits_propios():
+    """Returns list of Expoconsult CUITs from CONFIG_EMPRESA.
+
+    Looks for keys matching CUIT_EXPOCONSULT, CUIT_EXPOCONSULT_2, etc.
+
+    Returns:
+        list[str]: CUITs (11 digits, no dashes).
+    """
+    client, _ = get_gsheets_client()
+    if not client:
+        return ["30570717630"]  # Hardcoded fallback
+    sheet_id = _get_sheet_id()
+    if not sheet_id:
+        return ["30570717630"]
+    config = _leer_config_empresa(client, sheet_id)
+    cuits = []
+    for k, v in config.items():
+        if k.startswith("CUIT_EXPOCONSULT"):
+            clean = v.replace("-", "").replace(" ", "").strip()
+            if clean:
+                cuits.append(clean)
+    return cuits if cuits else ["30570717630"]
+
+
+def get_fecha_inicio_export_dux():
+    """Returns the cutoff date for DUX export from CONFIG_EMPRESA.
+
+    Returns:
+        str: ISO date string (YYYY-MM-DD) or "" if not set.
+    """
+    client, _ = get_gsheets_client()
+    if not client:
+        return ""
+    sheet_id = _get_sheet_id()
+    if not sheet_id:
+        return ""
+    config = _leer_config_empresa(client, sheet_id)
+    return config.get("FECHA_INICIO_EXPORT_DUX", "")
+
+
+# ==========================================
 # 2. GOOGLE SHEETS INTEGRATION
 # ==========================================
 
