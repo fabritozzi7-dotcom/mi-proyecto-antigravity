@@ -18,34 +18,11 @@ logger = logging.getLogger(__name__)
 # CONSTANTES Y MAPEOS
 # ==========================================
 
-CUIT_EXPOCONSULT = "30570717630"
-
 # Código AFIP → Tipo FP en Dux
 AFIP_A_TIPO_FP = {
     "001": "F", "006": "F", "011": "F", "051": "F",
     "002": "ND", "007": "ND", "012": "ND", "052": "ND",
     "003": "NC", "008": "NC", "013": "NC", "053": "NC",
-}
-
-# Empleado (nombre en RENDICIONES_LOG) → ID cuenta tesorería Dux
-EMPLEADO_A_ID_TESORERIA = {
-    "DAVID REQUELME": "319",
-    "PEDRO OVIEDO": "320",
-    "CARLOS VALENZUELA": "322",
-    "BRENDA FERNANDEZ": "359",
-    "FABRICIO DAURIA": "361",
-    "PABLO MUÑOZ": "364",
-    "GABRIEL SALCES": "366",
-    "JORGE ANGEL": "375",
-    "PABLO ACOSTA": "376",
-    "PABLO AACOSTA": "376",
-    "LUCIANO CAMASSA": "558",
-    "CRISTIAN CALDERON": "559",
-    "JUAN PABLO": "563",
-    "ALEJANDRO HONORATO": "903",
-    "GRACIELA": "904",
-    "GUSTAVO MASTRANGELO": "920",
-    "LUCIANA SARAVIA": "930",
 }
 
 # Código jurisdicción interno → nombre Dux
@@ -160,10 +137,18 @@ def resolver_tipo_fp(codigo_afip):
     return AFIP_A_TIPO_FP.get(code, "F")
 
 
-def resolver_id_tesoreria(nombre_usuario):
-    """Nombre de usuario → ID cuenta tesorería Dux."""
-    nombre = str(nombre_usuario or "").strip().upper()
-    return EMPLEADO_A_ID_TESORERIA.get(nombre, "")
+def resolver_id_tesoreria(nombre_usuario, codigo_empleado_fn=None):
+    """Nombre de usuario → ID cuenta tesorería Dux.
+
+    Args:
+        nombre_usuario: user name from RENDICIONES_LOG.
+        codigo_empleado_fn: callable(nombre) -> int|None, dynamic lookup.
+            If None, returns "" (no mapping available).
+    """
+    if codigo_empleado_fn is None:
+        return ""
+    code = codigo_empleado_fn(nombre_usuario)
+    return str(code) if code is not None else ""
 
 
 def resolver_jurisdiccion_dux(codigo_interno):
@@ -172,11 +157,22 @@ def resolver_jurisdiccion_dux(codigo_interno):
     return JURISDICCION_A_DUX.get(code, code)
 
 
-def es_propia(cuit, tipo_factura=""):
-    """Determina si un comprobante es PROPIA (Expo Consult + Factura A)."""
-    clean = str(cuit or "").replace("-", "").replace(" ", "").strip()
-    tipo = str(tipo_factura or "").strip().upper()
-    return clean == CUIT_EXPOCONSULT and tipo == "A"
+def es_propia(cuit_cliente, cuits_propios=None):
+    """Determina si un comprobante es PROPIA.
+
+    PROPIA when the client (receiver) CUIT matches any of Expoconsult's CUITs.
+    Does NOT depend on factura_tipo — only on who the invoice is addressed to.
+
+    Args:
+        cuit_cliente: CUIT of the client/receiver from the invoice.
+        cuits_propios: list of Expoconsult CUITs (from CONFIG_EMPRESA).
+    """
+    if not cuit_cliente or not cuits_propios:
+        return False
+    clean = str(cuit_cliente).replace("-", "").replace(" ", "").strip()
+    if not clean:
+        return False
+    return clean in cuits_propios
 
 
 def fila_a_dict(row):
@@ -277,7 +273,7 @@ def _construir_enc(grupo, tipo_factura_dux, total_importe, desglose_sumado):
 
     suc = safe_int(primer.get("sucursal"))
     nro = safe_int(primer.get("numero_factura"))
-    cuit_raw = str(primer.get("cuit_proveedor", "")).replace("-", "").strip()
+    cuit_proveedor = str(primer.get("cuit_proveedor", "")).replace("-", "").replace(" ", "").strip()
 
     is_propia = tipo_factura_dux == "PROPIA"
 
@@ -290,13 +286,13 @@ def _construir_enc(grupo, tipo_factura_dux, total_importe, desglose_sumado):
     fila[5] = suc                                 # F: Suc. FP
     fila[6] = nro                                 # G: Nro. FP
     # H: Concepto — vacío en ENC
-    fila[8] = cuit_raw if is_propia else ""       # I: CUIT (solo PROPIA)
+    fila[8] = cuit_proveedor                      # I: CUIT — ALWAYS (obligatorio en ENC)
     # J: Op. — vacío en ENC
     fila[10] = "PES"                              # K: Mon.
     fila[11] = round(total_importe, 2)            # L: Importe
 
     # M: Detalle — "CONSUMIDOR FINAL" si TERCEROS sin CUIT
-    if not is_propia and not cuit_raw:
+    if not is_propia and not cuit_proveedor:
         fila[12] = "CONSUMIDOR FINAL"
 
     # O-AB: Desglose fiscal (solo PROPIA)
@@ -321,8 +317,15 @@ def _construir_enc(grupo, tipo_factura_dux, total_importe, desglose_sumado):
     return fila
 
 
-def _construir_det(rend):
-    """Construye una fila DET a partir de una rendición individual."""
+def _construir_det(rend, tipo_factura_dux, codigo_concepto_fn=None, codigo_empleado_fn=None):
+    """Construye una fila DET a partir de una rendición individual.
+
+    Args:
+        rend: dict with internal keys.
+        tipo_factura_dux: "PROPIA" or "TERCEROS" (from group-level decision).
+        codigo_concepto_fn: callable(concepto) -> int|None.
+        codigo_empleado_fn: callable(usuario) -> int|None.
+    """
     fecha_raw = str(rend.get("fecha", "")).strip()
     fecha = fecha_raw
     if "-" in fecha_raw:
@@ -339,15 +342,20 @@ def _construir_det(rend):
 
     suc = safe_int(rend.get("sucursal"))
     nro = safe_int(rend.get("numero_factura"))
-    cuit_raw = str(rend.get("cuit_proveedor", "")).replace("-", "").strip()
-    tipo_raw = str(rend.get("factura_tipo", "")).strip().upper()
-    tipo_factura_dux = "PROPIA" if es_propia(cuit_raw, tipo_raw) else "TERCEROS"
 
     importe = safe_float(rend.get("monto_a_imputar"))
-    concepto = str(rend.get("concepto", "")).strip()
+    concepto_interno = str(rend.get("concepto", "")).strip()
     carpeta = str(rend.get("numero_carpeta", "")).strip()
     usuario = str(rend.get("usuario", "")).strip()
-    id_tesoreria = resolver_id_tesoreria(usuario)
+
+    # DUX code lookups
+    codigo_concepto = ""
+    if codigo_concepto_fn:
+        code = codigo_concepto_fn(concepto_interno)
+        if code is not None:
+            codigo_concepto = code  # int
+
+    id_tesoreria = resolver_id_tesoreria(usuario, codigo_empleado_fn)
 
     fila = [""] * len(DUX_HEADERS)
     fila[0] = "DET"                               # A
@@ -357,13 +365,14 @@ def _construir_det(rend):
     fila[4] = letra                                # E
     fila[5] = suc                                  # F
     fila[6] = nro                                  # G
-    fila[7] = concepto                             # H
+    fila[7] = codigo_concepto                      # H: DUX concept code (numeric)
     # I: CUIT — vacío en DET
-    fila[9] = carpeta                              # J: Op.
+    fila[9] = carpeta                              # J: Op. (número de carpeta)
     # K: Mon. — vacío en DET
     fila[11] = round(importe, 2)                   # L
-    # M: Detalle — vacío por ahora
-    fila[13] = id_tesoreria                        # N: idEmpleado
+    # M: Detalle
+    fila[12] = f"Rendición {usuario} - {concepto_interno}" if concepto_interno else ""
+    fila[13] = id_tesoreria                        # N: idEmpleado (DUX code)
     # O-AB: vacío en DET
 
     return fila
@@ -408,24 +417,30 @@ def _sumar_desglose(grupo):
     return totales
 
 
-def generar_filas_dux(grupos):
+def generar_filas_dux(grupos, cuits_propios=None, codigo_concepto_fn=None,
+                      codigo_empleado_fn=None):
     """
     Genera la lista completa de filas ENC/DET para el Excel Dux.
 
     Args:
         grupos: OrderedDict de {clave: [rendiciones]}, salida de
                 agrupar_por_comprobante.
+        cuits_propios: list of Expoconsult CUITs for PROPIA detection.
+        codigo_concepto_fn: callable(concepto) -> int|None.
+        codigo_empleado_fn: callable(usuario) -> int|None.
 
     Returns:
         Lista de listas (cada sublista = 28 celdas, una fila del Excel).
+
+    Raises:
+        ValueError: if sum(DET) differs from ENC by more than $1 for any group.
     """
     filas = []
 
     for clave, grupo in grupos.items():
         first = grupo[0]
-        cuit_raw = str(first.get("cuit_proveedor", "")).replace("-", "").strip()
-        tipo_factura_raw = str(first.get("factura_tipo", "")).strip().upper()
-        is_propia_flag = es_propia(cuit_raw, tipo_factura_raw)
+        cuit_cliente = str(first.get("cuit_cliente", "")).replace("-", "").replace(" ", "").strip()
+        is_propia_flag = es_propia(cuit_cliente, cuits_propios)
         tipo_factura_dux = "PROPIA" if is_propia_flag else "TERCEROS"
 
         # Total ENC = suma de montos a imputar de todas las filas del grupo
@@ -439,11 +454,136 @@ def generar_filas_dux(grupos):
         filas.append(enc)
 
         # Filas DET (una por rendición/carpeta)
+        det_importes = []
         for rend in grupo:
-            det = _construir_det(rend)
+            det = _construir_det(rend, tipo_factura_dux, codigo_concepto_fn, codigo_empleado_fn)
             filas.append(det)
+            det_importes.append(safe_float(det[11]))
+
+        # Validate sum(DET) == ENC
+        sum_det = sum(det_importes)
+        diff = abs(total_importe - sum_det)
+        if diff > 1.0:
+            cuit_prov = str(first.get("cuit_proveedor", "")).strip()
+            raise ValueError(
+                f"Sum(DET)={sum_det:.2f} != ENC={total_importe:.2f} "
+                f"(diff=${diff:.2f}) for {cuit_prov} — aborting"
+            )
+        elif diff > 0.005:
+            # Adjust last DET for rounding
+            last_det_idx = len(filas) - 1
+            filas[last_det_idx][11] = round(filas[last_det_idx][11] + (total_importe - sum_det), 2)
 
     return filas
+
+
+# ==========================================
+# VALIDACIÓN PRE-EXPORT
+# ==========================================
+
+
+def validar_rendiciones_para_export(rendiciones, codigo_concepto_fn=None,
+                                    codigo_empleado_fn=None, cuits_propios=None):
+    """Validates renditions before DUX export.
+
+    Returns:
+        list[dict]: errors. Each dict has keys: tipo, mensaje, filas_afectadas.
+        Empty list means validation passed.
+    """
+    errors = []
+
+    # Group errors by type
+    sin_cuit = []
+    sin_concepto_dux = {}  # concepto -> [row indices/ids]
+    sin_empleado_dux = {}  # usuario -> [row indices/ids]
+    propia_sin_desglose = []
+    sin_carpeta = []
+
+    for i, rend in enumerate(rendiciones):
+        row_ref = rend.get("id_operacion", f"fila {i+1}")
+
+        # 1. CUIT proveedor (11 digits)
+        cuit = str(rend.get("cuit_proveedor", "")).replace("-", "").replace(" ", "").strip()
+        if not cuit or len(cuit) != 11 or not cuit.isdigit():
+            sin_cuit.append(f"row {row_ref}: CUIT='{cuit}'")
+
+        # 2. Concepto → codigo DUX
+        concepto = str(rend.get("concepto", "")).strip()
+        if concepto and codigo_concepto_fn:
+            code = codigo_concepto_fn(concepto)
+            if code is None:
+                sin_concepto_dux.setdefault(concepto, []).append(row_ref)
+
+        # 3. Usuario → idEmpleado DUX
+        usuario = str(rend.get("usuario", "")).strip()
+        if usuario and codigo_empleado_fn:
+            code = codigo_empleado_fn(usuario)
+            if code is None:
+                sin_empleado_dux.setdefault(usuario, []).append(row_ref)
+
+        # 4. PROPIA sin desglose
+        cuit_cliente = str(rend.get("cuit_cliente", "")).replace("-", "").replace(" ", "").strip()
+        if es_propia(cuit_cliente, cuits_propios):
+            neto = safe_float(rend.get("neto_gravado"))
+            no_grav = safe_float(rend.get("no_gravado"))
+            if neto == 0 and no_grav == 0:
+                propia_sin_desglose.append(f"row {row_ref}")
+
+        # 5. Carpeta
+        carpeta = str(rend.get("numero_carpeta", "")).strip()
+        if not carpeta:
+            sin_carpeta.append(f"row {row_ref}")
+
+    # Build error list
+    if sin_cuit:
+        errors.append({
+            "tipo": "CUIT proveedor inválido",
+            "mensaje": f"{len(sin_cuit)} rendiciones con CUIT vacío o inválido (debe ser 11 dígitos)",
+            "filas_afectadas": sin_cuit,
+            "accion": "Editá la rendición y completá el CUIT manualmente",
+        })
+
+    if sin_concepto_dux:
+        total = sum(len(v) for v in sin_concepto_dux.values())
+        detalles = []
+        for conc, rows in sin_concepto_dux.items():
+            detalles.append(f'  "{conc}" (rows: {", ".join(str(r) for r in rows[:5])})')
+        errors.append({
+            "tipo": "Concepto sin código DUX",
+            "mensaje": f"{total} rendiciones con concepto sin mapear",
+            "filas_afectadas": detalles,
+            "accion": "Completá la columna 'concepto_interno' en MAESTRO_CONCEPTOS_DUX",
+        })
+
+    if sin_empleado_dux:
+        total = sum(len(v) for v in sin_empleado_dux.values())
+        detalles = []
+        for usr, rows in sin_empleado_dux.items():
+            detalles.append(f'  "{usr}" (rows: {", ".join(str(r) for r in rows[:5])})')
+        errors.append({
+            "tipo": "Usuario sin idEmpleado DUX",
+            "mensaje": f"{total} rendiciones con usuario sin código de tesorería",
+            "filas_afectadas": detalles,
+            "accion": "Completá 'codigo_dux' en la hoja USUARIOS",
+        })
+
+    if propia_sin_desglose:
+        errors.append({
+            "tipo": "Factura PROPIA sin desglose impositivo",
+            "mensaje": f"{len(propia_sin_desglose)} facturas PROPIA sin netoGravado ni noGravado",
+            "filas_afectadas": propia_sin_desglose,
+            "accion": "Editá la rendición y completá los importes de desglose",
+        })
+
+    if sin_carpeta:
+        errors.append({
+            "tipo": "Rendición sin número de carpeta",
+            "mensaje": f"{len(sin_carpeta)} rendiciones sin carpeta (col J del DET quedará vacía)",
+            "filas_afectadas": sin_carpeta,
+            "accion": "Editá la rendición y completá el número de carpeta",
+        })
+
+    return errors
 
 
 # ==========================================
@@ -548,7 +688,8 @@ def exportar_excel_dux(filas, output_path):
 # PIPELINE COMPLETO
 # ==========================================
 
-def exportar_dux_desde_sheets(rendiciones_raw, output_path):
+def exportar_dux_desde_sheets(rendiciones_raw, output_path, cuits_propios=None,
+                              codigo_concepto_fn=None, codigo_empleado_fn=None):
     """
     Pipeline completo: recibe lista de dicts (rendiciones), agrupa,
     genera filas ENC/DET y escribe el Excel.
@@ -556,12 +697,15 @@ def exportar_dux_desde_sheets(rendiciones_raw, output_path):
     Args:
         rendiciones_raw: lista de dicts con claves internas (HEADER_MAP).
         output_path: ruta del .xlsx de salida.
+        cuits_propios: list of Expoconsult CUITs.
+        codigo_concepto_fn: callable(concepto) -> int|None.
+        codigo_empleado_fn: callable(usuario) -> int|None.
 
     Returns:
         int — cantidad de filas generadas (sin contar header).
     """
     grupos = agrupar_por_comprobante(rendiciones_raw)
-    filas = generar_filas_dux(grupos)
+    filas = generar_filas_dux(grupos, cuits_propios, codigo_concepto_fn, codigo_empleado_fn)
     exportar_excel_dux(filas, output_path)
     return len(filas)
 
@@ -571,99 +715,129 @@ def exportar_dux_desde_sheets(rendiciones_raw, output_path):
 # ==========================================
 
 if __name__ == "__main__":
-    print("=== Test standalone dux_export ===\n")
+    print("=== Test standalone dux_export (refactored) ===\n")
 
-    # Caso 1: TERCEROS con 2 carpetas (prorrateo)
+    CUITS_PROPIOS = ["30570717630"]
+
+    # Mock lookup functions
+    MOCK_CONCEPTOS = {"FLETE TERRESTRE": 911, "HONORARIOS DESPACHANTE": 5102}
+    MOCK_EMPLEADOS = {"DAVID REQUELME": 319, "FABRICIO DAURIA": 361}
+
+    def mock_concepto_fn(c):
+        return MOCK_CONCEPTOS.get(str(c).strip().upper())
+
+    def mock_empleado_fn(u):
+        return MOCK_EMPLEADOS.get(str(u).strip().upper())
+
+    # Caso 1: TERCEROS con 2 carpetas — cuit_cliente vacío (B invoice)
     terceros_base = {
-        "id_operacion": "20260215120000",
-        "fecha": "2026-02-15",
-        "usuario": "DAVID REQUELME",
-        "oficina": "BUENOS AIRES",
-        "tipo_operacion": "Importación",
-        "cliente": "Importadora X",
-        "concepto": "Flete terrestre",
-        "monto_concepto": "50000",
-        "factura_tipo": "B",
-        "codigo_afip": "006",
-        "sucursal": "00010",
-        "numero_factura": "00045678",
-        "n_comprobante": "0001000045678",
-        "proveedor_validado": "Sí",
-        "cuit_proveedor": "30712345678",
-        "neto_gravado": 0,
-        "no_gravado": 50000.0,
-        "iva_21": 0,
-        "iva_105": 0,
-        "iva_27": 0,
-        "perc_iva": 0,
-        "perc_ganancias": 0,
-        "perc_iibb": 0,
-        "jurisdiccion": "",
-        "monto_total_ticket": 50000.0,
-        "monto_a_imputar": 25000.0,
-        "ticket_url": "",
-        "estado": "CERRADO",
-        "clave_maestra": "30712345678B0001000045678",
-        "observaciones": "",
+        "id_operacion": "20260215120000", "fecha": "2026-02-15",
+        "usuario": "DAVID REQUELME", "oficina": "BUENOS AIRES",
+        "tipo_operacion": "Importación", "cliente": "Importadora X",
+        "concepto": "Flete terrestre", "monto_concepto": "50000",
+        "factura_tipo": "B", "codigo_afip": "006",
+        "sucursal": "00010", "numero_factura": "00045678",
+        "n_comprobante": "0001000045678", "proveedor_validado": "Sí",
+        "cuit_proveedor": "30712345678", "cuit_cliente": "",
+        "neto_gravado": 0, "no_gravado": 50000.0,
+        "iva_21": 0, "iva_105": 0, "iva_27": 0,
+        "perc_iva": 0, "perc_ganancias": 0, "perc_iibb": 0,
+        "jurisdiccion": "", "monto_total_ticket": 50000.0,
+        "monto_a_imputar": 25000.0, "ticket_url": "", "estado": "CERRADO",
+        "clave_maestra": "30712345678B0001000045678", "observaciones": "",
     }
     terceros_1 = {**terceros_base, "numero_carpeta": "IMP-2026-001"}
     terceros_2 = {**terceros_base, "numero_carpeta": "IMP-2026-002"}
 
-    # Caso 2: PROPIA con 3 carpetas (prorrateo) — Factura A con desglose
+    # Caso 2: PROPIA con 3 carpetas — cuit_cliente = Expoconsult
     propia_base = {
-        "id_operacion": "20260215130000",
-        "fecha": "2026-02-15",
-        "usuario": "FABRICIO DAURIA",
-        "oficina": "BUENOS AIRES",
-        "tipo_operacion": "Exportación",
-        "cliente": "Exportadora Y",
-        "concepto": "Honorarios despachante",
-        "monto_concepto": "120000",
-        "factura_tipo": "A",
-        "codigo_afip": "001",
-        "sucursal": "00003",
-        "numero_factura": "00099001",
-        "n_comprobante": "0000300099001",
-        "proveedor_validado": "Sí",
-        "cuit_proveedor": "30570717630",
-        "neto_gravado": 33057.85,
-        "no_gravado": 0,
-        "iva_21": 6942.15,
-        "iva_105": 0,
-        "iva_27": 0,
-        "perc_iva": 0,
-        "perc_ganancias": 0,
-        "perc_iibb": 1320.23,
-        "jurisdiccion": "CF",
-        "monto_total_ticket": 41320.23,
-        "monto_a_imputar": 13773.41,
-        "ticket_url": "",
-        "estado": "CERRADO",
-        "clave_maestra": "30570717630A0000300099001",
-        "observaciones": "Liquidación mensual",
+        "id_operacion": "20260215130000", "fecha": "2026-02-15",
+        "usuario": "FABRICIO DAURIA", "oficina": "BUENOS AIRES",
+        "tipo_operacion": "Exportación", "cliente": "Exportadora Y",
+        "concepto": "Honorarios despachante", "monto_concepto": "120000",
+        "factura_tipo": "A", "codigo_afip": "001",
+        "sucursal": "00003", "numero_factura": "00099001",
+        "n_comprobante": "0000300099001", "proveedor_validado": "Sí",
+        "cuit_proveedor": "20345678901", "cuit_cliente": "30570717630",
+        "neto_gravado": 33057.85, "no_gravado": 0,
+        "iva_21": 6942.15, "iva_105": 0, "iva_27": 0,
+        "perc_iva": 0, "perc_ganancias": 0, "perc_iibb": 1320.23,
+        "jurisdiccion": "CF", "monto_total_ticket": 41320.23,
+        "monto_a_imputar": 13773.41, "ticket_url": "", "estado": "CERRADO",
+        "clave_maestra": "20345678901A0000300099001", "observaciones": "",
     }
     propia_1 = {**propia_base, "numero_carpeta": "EXP-2026-010"}
     propia_2 = {**propia_base, "numero_carpeta": "EXP-2026-011"}
     propia_3 = {**propia_base, "numero_carpeta": "EXP-2026-012",
-                "monto_a_imputar": 13773.41}  # residuo ajustado
+                "monto_a_imputar": 13773.41}
 
-    rendiciones = [terceros_1, terceros_2, propia_1, propia_2, propia_3]
+    # Caso 3: Factura A con cuit_cliente != Expoconsult → TERCEROS
+    otra_base = {**propia_base,
+        "id_operacion": "20260215140000",
+        "cuit_proveedor": "20999888777",
+        "cuit_cliente": "20111222333",  # NOT Expoconsult
+        "monto_a_imputar": 41320.23,
+        "clave_maestra": "20999888777A0000300099002",
+        "sucursal": "00003", "numero_factura": "00099002",
+    }
+    otra_1 = {**otra_base, "numero_carpeta": "EXP-2026-020"}
 
-    output = "dux_test_output.xlsx"
-    total = exportar_dux_desde_sheets(rendiciones, output)
+    rendiciones = [terceros_1, terceros_2, propia_1, propia_2, propia_3, otra_1]
 
-    print(f"Generadas {total} filas en '{output}'")
-    print(f"  - Esperado: 2 ENC + 5 DET = 7 filas")
-
-    # Verificación rápida
+    # Test generation
     grupos = agrupar_por_comprobante(rendiciones)
-    for clave, grupo in grupos.items():
-        cuit = grupo[0]["cuit_proveedor"]
-        tipo = "PROPIA" if es_propia(cuit) else "TERCEROS"
-        total_enc = sum(safe_float(r["monto_a_imputar"]) for r in grupo)
-        print(f"\n  Grupo [{tipo}] clave={clave}")
-        print(f"    Filas: {len(grupo)}, ENC Importe: ${total_enc:,.2f}")
-        for r in grupo:
-            print(f"    DET carpeta={r['numero_carpeta']} importe=${safe_float(r['monto_a_imputar']):,.2f}")
+    filas = generar_filas_dux(grupos, CUITS_PROPIOS, mock_concepto_fn, mock_empleado_fn)
 
-    print(f"\nArchivo generado: {output}")
+    print(f"Generadas {len(filas)} filas")
+    print(f"  - Esperado: 3 ENC + 6 DET = 9 filas\n")
+
+    for fila in filas:
+        tipo_r = fila[0]
+        tipo_f = fila[1]
+        cuit_i = fila[8]
+        concepto_h = fila[7]
+        empleado_n = fila[13]
+        importe = fila[11]
+        carpeta = fila[9]
+        print(f"  {tipo_r:3s} | {tipo_f:8s} | CUIT={str(cuit_i):13s} | H={str(concepto_h):6s} | N={str(empleado_n):4s} | L=${importe:>10} | J={carpeta}")
+
+    # Assertions
+    enc_rows = [f for f in filas if f[0] == "ENC"]
+    det_rows = [f for f in filas if f[0] == "DET"]
+    assert len(enc_rows) == 3, f"Expected 3 ENC, got {len(enc_rows)}"
+    assert len(det_rows) == 6, f"Expected 6 DET, got {len(det_rows)}"
+
+    # ENC always has CUIT (col I)
+    for enc in enc_rows:
+        assert enc[8] != "", f"ENC missing CUIT: {enc}"
+
+    # TERCEROS: cuit_cliente empty → should be TERCEROS
+    assert enc_rows[0][1] == "TERCEROS", f"Expected TERCEROS, got {enc_rows[0][1]}"
+
+    # PROPIA: cuit_cliente = 30570717630 → should be PROPIA
+    assert enc_rows[1][1] == "PROPIA", f"Expected PROPIA, got {enc_rows[1][1]}"
+
+    # Factura A with different cuit_cliente → TERCEROS (key test!)
+    assert enc_rows[2][1] == "TERCEROS", f"Expected TERCEROS for non-Expoconsult client, got {enc_rows[2][1]}"
+
+    # DET has concepto code (not text)
+    assert det_rows[0][7] == 911, f"Expected 911, got {det_rows[0][7]}"
+    assert det_rows[2][7] == 5102, f"Expected 5102, got {det_rows[2][7]}"
+
+    # DET has empleado code (not name)
+    assert det_rows[0][13] == "319", f"Expected 319, got {det_rows[0][13]}"
+    assert det_rows[2][13] == "361", f"Expected 361, got {det_rows[2][13]}"
+
+    # DET has carpeta in col J
+    assert det_rows[0][9] == "IMP-2026-001"
+
+    # Validation test
+    print("\n=== Validation test ===")
+    errors = validar_rendiciones_para_export(
+        rendiciones, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS
+    )
+    print(f"  Errors: {len(errors)}")
+    for e in errors:
+        print(f"  - {e['tipo']}: {e['mensaje']}")
+
+    print("\nALL ASSERTIONS PASSED")

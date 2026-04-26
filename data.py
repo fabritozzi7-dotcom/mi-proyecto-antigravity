@@ -1528,7 +1528,8 @@ def _revertir_imputacion_saldos(sh, cuit, id_factura, monto_a_revertir):
 # 5. EXPORTACIÓN DUX
 # ==========================================
 
-from dux_export import agrupar_por_comprobante, generar_filas_dux, DUX_HEADERS, safe_float
+from dux_export import (agrupar_por_comprobante, generar_filas_dux, DUX_HEADERS,
+                        safe_float, validar_rendiciones_para_export)
 
 
 def escribir_export_dux_en_sheet(fecha_desde=None, fecha_hasta=None, estado=None):
@@ -1652,9 +1653,15 @@ def escribir_export_dux_en_sheet(fecha_desde=None, fecha_hasta=None, estado=None
 
         logger.info(f"Dux export: {len(rendiciones)} filas después de filtros")
 
-        # 4. Generar filas ENC/DET
+        # 4. Generar filas ENC/DET (with dynamic lookups)
+        cuits_propios = get_cuits_propios()
         grupos = agrupar_por_comprobante(rendiciones)
-        filas_dux = generar_filas_dux(grupos)
+        filas_dux = generar_filas_dux(
+            grupos,
+            cuits_propios=cuits_propios,
+            codigo_concepto_fn=get_codigo_concepto_dux,
+            codigo_empleado_fn=get_codigo_empleado_dux,
+        )
 
         if not filas_dux:
             return False, "No se generaron filas ENC/DET (sin comprobantes válidos).", 0
