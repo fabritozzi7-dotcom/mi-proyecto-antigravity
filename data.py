@@ -263,6 +263,64 @@ def asegurar_columna_codigo_dux_usuarios(sh):
         logger.info("USUARIOS already has 'codigo_dux' column")
 
 
+def migrar_headers_rendiciones_log(sh):
+    """Idempotent migration: rename perception headers and add new columns.
+
+    Renames:
+    - pos 23 (X): 'Perc IIBB' → 'Perc_IIBB_1'
+    - pos 24 (Y): 'Jurisdicción' → 'Jurisdiccion_IIBB_1'
+
+    Adds (if missing):
+    - Perc_IIBB_2, Jurisdiccion_IIBB_2, Perc_Municipal, Jurisdiccion_Municipal
+    """
+    try:
+        ws = sh.worksheet("RENDICIONES_LOG")
+    except gspread.exceptions.WorksheetNotFound:
+        return  # No sheet to migrate
+
+    headers = ws.row_values(1)
+    if not headers:
+        return
+
+    updates = []
+
+    # Rename existing headers by checking current value
+    # pos 23 (col X, 1-based col 24)
+    if len(headers) > 23:
+        current_x = headers[23].strip()
+        if current_x in ("Perc IIBB", "Perc_IIBB"):
+            updates.append({"range": "X1", "values": [["Perc_IIBB_1"]]})
+    # pos 24 (col Y, 1-based col 25)
+    if len(headers) > 24:
+        current_y = headers[24].strip()
+        if current_y in ("Jurisdicción", "Jurisdiccion"):
+            updates.append({"range": "Y1", "values": [["Jurisdiccion_IIBB_1"]]})
+
+    # Add new headers at end if missing
+    headers_upper = [h.strip().upper() for h in headers]
+    NEW_HEADERS = [
+        ("Perc_IIBB_2", "AJ"),
+        ("Jurisdiccion_IIBB_2", "AK"),
+        ("Perc_Municipal", "AL"),
+        ("Jurisdiccion_Municipal", "AM"),
+    ]
+    for name, col_letter in NEW_HEADERS:
+        if name.upper() not in headers_upper:
+            # Ensure enough columns
+            col_idx = ord(col_letter[0]) - ord('A')
+            if len(col_letter) > 1:
+                col_idx = (col_idx + 1) * 26 + (ord(col_letter[1]) - ord('A'))
+            if ws.col_count <= col_idx:
+                ws.resize(cols=col_idx + 1)
+            updates.append({"range": f"{col_letter}1", "values": [[name]]})
+
+    if updates:
+        ws.batch_update(updates)
+        logger.info(f"RENDICIONES_LOG headers migrated: {len(updates)} changes")
+    else:
+        logger.info("RENDICIONES_LOG headers already up to date")
+
+
 # ==========================================
 # 1c. DUX CACHED LOOKUPS
 # ==========================================
@@ -695,6 +753,12 @@ def sync_data_from_sheets():
         except Exception as e:
             logger.warning(f"Could not ensure codigo_dux column in USUARIOS: {e}")
 
+        # 10. RENDICIONES_LOG headers migration (perception columns)
+        try:
+            migrar_headers_rendiciones_log(sh)
+        except Exception as e:
+            logger.warning(f"Could not migrate RENDICIONES_LOG headers: {e}")
+
         return True, "Sync OK"
 
     except gspread.exceptions.SpreadsheetNotFound:
@@ -898,8 +962,9 @@ def log_rendicion_to_sheet(payload, ticket_url="", estado_override=None):
         col_u_iva27 = desglose.get("columna_U_iva_27", 0)
         col_v_perc_iva = desglose.get("columna_V_perc_iva", 0)
         col_w_perc_g = desglose.get("columna_W_perc_ganancias", 0)
-        col_x_perc_i = desglose.get("columna_X_perc_iibb", 0)
-        col_y_juris = desglose.get("columna_Y_jurisdiccion_code", "")
+        # Percepciones IIBB: prefer direct payload keys (new format), fallback to desglose (old format)
+        col_x_perc_i = payload.get("perc_iibb_1", desglose.get("columna_X_perc_iibb", 0))
+        col_y_juris = payload.get("jurisdiccion_iibb_1", desglose.get("columna_Y_jurisdiccion_code", ""))
         col_z_total = desglose.get("monto_total_columna_Z", desglose.get("monto_total_columna_Y", monto_ticket))
 
         row = [
@@ -947,6 +1012,14 @@ def log_rendicion_to_sheet(payload, ticket_url="", estado_override=None):
             # --- DUX COLUMNS (AI) ---
             str(payload.get("cuit_cliente", "") or "").replace("-", "").replace(" ", "").strip(),
                                                         # 35 (AI). Cuit_Cliente
+
+            # --- PERCEPTION COLUMNS (AJ-AM) ---
+            # NOTE: proration divides all numeric payload values by N in the save loop.
+            # These perception values are prorated alongside the original desglose fields.
+            payload.get("perc_iibb_2", 0),              # 36 (AJ). Perc_IIBB_2
+            payload.get("jurisdiccion_iibb_2", ""),      # 37 (AK). Jurisdiccion_IIBB_2
+            payload.get("perc_municipal", 0),            # 38 (AL). Perc_Municipal
+            payload.get("jurisdiccion_municipal", ""),   # 39 (AM). Jurisdiccion_Municipal
         ]
 
         ws_log.append_row(row)
@@ -1557,7 +1630,9 @@ SHEET_KEY_MAP = {
     "Perc IVA": "perc_iva",
     "Perc Ganancias": "perc_ganancias",
     "Perc IIBB": "perc_iibb",
+    "Perc_IIBB_1": "perc_iibb",
     "Jurisdicción": "jurisdiccion",
+    "Jurisdiccion_IIBB_1": "jurisdiccion",
     "Monto Total Ticket": "monto_total_ticket",
     "Monto a Imputar": "monto_a_imputar",
     "Ticket URL": "ticket_url",
@@ -1568,6 +1643,10 @@ SHEET_KEY_MAP = {
     "Revisado_Por": "revisado_por",
     "Fecha_Revision": "fecha_revision",
     "Cuit_Cliente": "cuit_cliente",
+    "Perc_IIBB_2": "perc_iibb_2",
+    "Jurisdiccion_IIBB_2": "jurisdiccion_iibb_2",
+    "Perc_Municipal": "perc_municipal",
+    "Jurisdiccion_Municipal": "jurisdiccion_municipal",
 }
 
 

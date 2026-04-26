@@ -71,6 +71,10 @@ HEADER_MAP = [
     "revisado_por",        # 32 (AG)
     "fecha_revision",      # 33 (AH)
     "cuit_cliente",        # 34 (AI)
+    "perc_iibb_2",         # 35 (AJ)
+    "jurisdiccion_iibb_2", # 36 (AK)
+    "perc_municipal",      # 37 (AL)
+    "jurisdiccion_municipal", # 38 (AM)
 ]
 
 DUX_HEADERS = [
@@ -581,6 +585,31 @@ def validar_rendiciones_para_export(rendiciones, codigo_concepto_fn=None,
             "mensaje": f"{len(sin_carpeta)} rendiciones sin carpeta (col J del DET quedará vacía)",
             "filas_afectadas": sin_carpeta,
             "accion": "Editá la rendición y completá el número de carpeta",
+        })
+
+    # WARNING (not error): IIBB_2 or Perc_Municipal present but not exported
+    con_perc_extra = []
+    for i, rend in enumerate(rendiciones):
+        row_ref = rend.get("id_operacion", f"fila {i+1}")
+        iibb2 = safe_float(rend.get("perc_iibb_2"))
+        muni = safe_float(rend.get("perc_municipal"))
+        if iibb2 > 0 or muni > 0:
+            parts = []
+            if iibb2 > 0:
+                parts.append(f"IIBB_2=${iibb2:,.2f}")
+            if muni > 0:
+                parts.append(f"Municipal=${muni:,.2f}")
+            con_perc_extra.append(f"row {row_ref}: {', '.join(parts)}")
+
+    if con_perc_extra:
+        errors.append({
+            "tipo": "Percepciones no incluidas en export DUX (WARNING)",
+            "mensaje": (
+                f"{len(con_perc_extra)} rendiciones tienen percepciones IIBB de 2 jurisdicciones "
+                f"y/o Percepción Municipal. El export DUX actual NO incluye estos datos en el archivo."
+            ),
+            "filas_afectadas": con_perc_extra,
+            "accion": "Considerá agregarlos manualmente en DUX o esperá la próxima actualización del export.",
         })
 
     return errors
