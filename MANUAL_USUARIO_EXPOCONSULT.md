@@ -198,4 +198,51 @@ Ante cualquier duda, consultar con el area de Administracion.
 
 ---
 
+## 7. CUIT del Cliente (para exportacion DUX)
+
+A partir de esta version, el sistema extrae automaticamente el **CUIT del cliente** (receptor de la factura) al escanear comprobantes. Este dato se usa para la exportacion al sistema contable DUX.
+
+### Donde aparece
+
+Despues de escanear un comprobante o en modo manual, hay un campo **"CUIT del Cliente (Receptor)"**.
+
+- En facturas tipo A: generalmente ambos CUITs aparecen (emisor y receptor). Gemini intenta extraerlos automaticamente.
+- En facturas B/C/Ticket: normalmente no aparece el CUIT del receptor. Dejar vacio.
+- Si el CUIT del cliente es **30570717630** (Expoconsult), la factura se exportara como **PROPIA** en DUX (con desglose impositivo completo).
+- Si el CUIT es otro o esta vacio, se exporta como **TERCEROS**.
+
+### Que hacer
+
+- Verificar que el CUIT extraido sea correcto si aparece pre-llenado.
+- Si la factura esta emitida a Expoconsult y el campo quedo vacio, completar manualmente con **30570717630**.
+- No es obligatorio: si se deja vacio, la factura simplemente se exporta como TERCEROS.
+
+---
+
+## 8. Exportacion DUX (Administradores)
+
+La exportacion DUX ahora incluye validacion previa obligatoria.
+
+### Pasos
+
+1. Ingresar al panel admin con la clave.
+2. Seleccionar rango de fechas.
+3. Seleccionar modo de export:
+   - **Solo facturas cerradas** (recomendado): exporta CERRADO y LISTA PARA AJUSTE.
+   - **Permitir parciales**: incluye tambien PENDIENTE (facturas con saldo abierto).
+4. Click en **"Validar antes de exportar"**.
+5. Si hay errores, corregirlos segun las instrucciones del reporte.
+6. Si la validacion es exitosa, click en **"Exportar a EXPORT_DUX"**.
+
+### Errores comunes de validacion
+
+| Error | Solucion |
+|-------|----------|
+| Concepto sin codigo DUX | Completar mapeo en MAESTRO_CONCEPTOS_DUX |
+| Usuario sin idEmpleado DUX | Completar codigo_dux en USUARIOS |
+| CUIT proveedor invalido | Editar rendicion y completar CUIT |
+| Factura PROPIA sin desglose | Editar rendicion y completar importes |
+
+---
+
 *Sistema de Rendiciones Expoconsult - https://expoconsult-rendiciones.streamlit.app*
