@@ -93,6 +93,7 @@ HEADER_MAP = [
     "motivo_rechazo",      # 31 (AF)
     "revisado_por",        # 32 (AG)
     "fecha_revision",      # 33 (AH)
+    "cuit_cliente",        # 34 (AI)
 ]
 
 DUX_HEADERS = [

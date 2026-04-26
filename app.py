@@ -42,7 +42,8 @@ if st.session_state.get("needs_reset"):
     keys_to_reset = [
         "folder_input", "concept_input", "obs_input", "scanned_data", "desglose_data",
         "manual_cuit", "manual_provider", "manual_tipo", "manual_suc", "manual_num", "manual_total", "manual_neto", "manual_afip",
-        "scan_suc_input", "scan_num_input", "scan_tipo_input", "scan_cuit_input", "scan_provider_input"
+        "scan_suc_input", "scan_num_input", "scan_tipo_input", "scan_cuit_input", "scan_cuit_cliente_input", "scan_provider_input",
+        "manual_cuit_cliente"
     ]
     for k in keys_to_reset:
         if k in st.session_state:
@@ -144,7 +145,8 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
           "codigo_afip": "String (001, 006, etc) o null", 
           "fecha": "DD/MM/AAAA",
           "proveedor": "String (Nombre de fantasía o Razón Social)",
-          "cuit": "String (Solo números, sin guiones)",
+          "cuit": "String (CUIT del PROVEEDOR/EMISOR, solo números, sin guiones)",
+          "cuit_cliente": "String (CUIT del CLIENTE/RECEPTOR si aparece en el comprobante, solo números, sin guiones) o null",
           "sucursal": "Punto de venta (5 digitos)",
           "numero_comprobante": "Numero (8 digitos)",
           "monto_total_columna_Z": Number (Float, el total a pagar),
@@ -339,6 +341,7 @@ with st.container(border=True):
                             st.session_state.scan_tipo_input = "C"
                         
                         st.session_state.scan_cuit_input = str(scan_result.get("cuit") or "")
+                        st.session_state.scan_cuit_cliente_input = str(scan_result.get("cuit_cliente") or "")
                         st.session_state.scan_provider_input = str(scan_result.get("proveedor") or "")
                         
                         status.update(label="✅ Escaneo completado!", state="complete", expanded=False)
@@ -489,6 +492,16 @@ if "scanned_data" in st.session_state and final_image_bytes:
             
         afip_code_input = st.text_input("Código AFIP", value=default_afip)
 
+        # CUIT del Cliente (receptor) — for PROPIA/TERCEROS detection in DUX export
+        if "scan_cuit_cliente_input" not in st.session_state:
+            st.session_state.scan_cuit_cliente_input = ""
+        cuit_cliente_input = st.text_input(
+            "CUIT del Cliente (Receptor)",
+            key="scan_cuit_cliente_input",
+            placeholder="11 dígitos, solo si aparece en el comprobante",
+            help="En facturas tipo A, el CUIT del cliente suele estar debajo del emisor. Si es Expoconsult (30570717630), la factura se exporta como PROPIA."
+        )
+
 # --- MANUAL ENTRY FALLBACK (Only if NO scan AND Toggle is ON) ---
 elif modo_manual:
     # Manual mode defaults (When NO scan exists)
@@ -546,6 +559,11 @@ elif modo_manual:
         monto_neto_input = st.number_input("Monto Neto Gravado", value=0.0, key="manual_neto")
         
     afip_code_input = st.text_input("Código AFIP", key="manual_afip")
+    cuit_cliente_input = st.text_input(
+        "CUIT del Cliente (Receptor)",
+        key="manual_cuit_cliente",
+        placeholder="11 dígitos (solo para facturas emitidas a Expoconsult)"
+    )
 else:
     # No scan and Toggle OFF -> Initialize variables to avoid NameError
     cuit_input = ""
@@ -556,6 +574,7 @@ else:
     monto_ticket_total = 0.0
     monto_neto_input = 0.0
     afip_code_input = ""
+    cuit_cliente_input = ""
     provider_status = "none"
 
 
@@ -680,6 +699,7 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
                 "proveedor_validado_txt": prov_valid_txt,
                 "proveedor_cuit": cuit_input,
                 "proveedor_nombre": provider_input,
+                "cuit_cliente": cuit_cliente_input,
                 
                 "monto_gravado_calculado": p_monto_gravado, # Prorated
                 "monto_ticket_total": p_monto_ticket,       # Prorated

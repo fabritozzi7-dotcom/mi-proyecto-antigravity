@@ -943,6 +943,10 @@ def log_rendicion_to_sheet(payload, ticket_url="", estado_override=None):
             "",                                         # 32 (AF). Motivo_Rechazo
             "",                                         # 33 (AG). Revisado_Por
             "",                                         # 34 (AH). Fecha_Revision
+
+            # --- DUX COLUMNS (AI) ---
+            str(payload.get("cuit_cliente", "") or "").replace("-", "").replace(" ", "").strip(),
+                                                        # 35 (AI). Cuit_Cliente
         ]
 
         ws_log.append_row(row)
@@ -1616,6 +1620,7 @@ def escribir_export_dux_en_sheet(fecha_desde=None, fecha_hasta=None, estado=None
             "Motivo_Rechazo": "motivo_rechazo",
             "Revisado_Por": "revisado_por",
             "Fecha_Revision": "fecha_revision",
+            "Cuit_Cliente": "cuit_cliente",
         }
 
         rendiciones = []
