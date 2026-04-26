@@ -793,12 +793,16 @@ with st.expander("⚙️ Administración (Exportación Dux)", expanded=False):
         # Rango de fechas: default primer y último día del mes actual
         today = datetime.date.today()
         first_day = today.replace(day=1)
-        # Último día del mes
         if today.month == 12:
             last_day = today.replace(day=31)
         else:
             last_day = today.replace(year=today.year if today.month < 12 else today.year + 1,
                                      month=today.month + 1, day=1) - datetime.timedelta(days=1)
+
+        # Date cutoff from CONFIG_EMPRESA
+        fecha_inicio_dux = data.get_fecha_inicio_export_dux()
+        if fecha_inicio_dux:
+            st.caption(f"Cutoff DUX: solo rendiciones con fecha >= {fecha_inicio_dux}")
 
         col_f1, col_f2 = st.columns(2)
         with col_f1:
@@ -806,21 +810,65 @@ with st.expander("⚙️ Administración (Exportación Dux)", expanded=False):
         with col_f2:
             dux_fecha_hasta = st.date_input("Fecha hasta", value=last_day, key="dux_fecha_hasta")
 
-        dux_estado = st.selectbox("Filtrar por estado",
-                                  ["Todos", "CERRADO", "PENDIENTE", "LISTA PARA AJUSTE",
-                                   "PENDIENTE REVISIÓN", "RECHAZADO"],
-                                  key="dux_estado_filter")
+        # Export mode toggle
+        dux_modo = st.radio(
+            "Modo de export",
+            ["Solo facturas cerradas (recomendado)", "Permitir parciales"],
+            key="dux_export_mode",
+            help="Modo A filtra solo CERRADO/LISTA PARA AJUSTE. Modo B incluye PENDIENTE."
+        )
+        modo_parcial = "Permitir" in dux_modo
 
-        if st.button("📤 Exportar a EXPORT_DUX", type="primary", use_container_width=True):
+        if modo_parcial:
+            st.warning(
+                "Modo parcial activado: las facturas con saldo pendiente se exportarán "
+                "con ENC.L = suma de imputaciones del período. Confirmá con DUX si tu "
+                "instancia soporta re-importar la misma factura más adelante con saldos "
+                "faltantes. Si DUX rechaza re-imports, NO uses este modo."
+            )
+
+        # Validation step
+        if st.button("Validar antes de exportar", use_container_width=True, key="btn_validar_dux"):
+            with st.spinner("Validando rendiciones..."):
+                from dux_export import validar_rendiciones_para_export
+                # Get renditions using the same filter logic as export
+                validation_result = data.validar_rendiciones_pre_export(
+                    fecha_desde=dux_fecha_desde,
+                    fecha_hasta=dux_fecha_hasta,
+                    modo_parcial=modo_parcial,
+                    fecha_inicio_dux=fecha_inicio_dux,
+                )
+                if validation_result is None:
+                    st.error("No se pudo leer RENDICIONES_LOG")
+                elif isinstance(validation_result, str):
+                    st.warning(validation_result)
+                elif len(validation_result) == 0:
+                    st.success("Validación OK — sin errores. Podés exportar.")
+                    st.session_state["dux_validation_passed"] = True
+                else:
+                    st.session_state["dux_validation_passed"] = False
+                    st.error(f"Export DUX abortado: {len(validation_result)} errores encontrados")
+                    for idx, err in enumerate(validation_result, 1):
+                        with st.expander(f"ERROR {idx} — {err['tipo']}", expanded=True):
+                            st.write(err["mensaje"])
+                            for f in err.get("filas_afectadas", [])[:10]:
+                                st.code(f)
+                            st.caption(f"Acción: {err.get('accion', '')}")
+
+        # Export button — only enabled after validation passes
+        export_enabled = st.session_state.get("dux_validation_passed", False)
+        if st.button("Exportar a EXPORT_DUX", type="primary", use_container_width=True,
+                     disabled=not export_enabled, key="btn_exportar_dux"):
             with st.spinner("Generando exportación Dux..."):
-                estado_filtro = None if dux_estado == "Todos" else dux_estado
                 success, msg, count = data.escribir_export_dux_en_sheet(
                     fecha_desde=dux_fecha_desde,
                     fecha_hasta=dux_fecha_hasta,
-                    estado=estado_filtro
+                    modo_parcial=modo_parcial,
+                    fecha_inicio_dux=fecha_inicio_dux,
                 )
                 if success:
                     st.success(f"✅ {msg}")
+                    st.session_state["dux_validation_passed"] = False
                 else:
                     st.error(f"❌ Error en exportación Dux")
                     st.code(msg)

@@ -1532,128 +1532,141 @@ from dux_export import (agrupar_por_comprobante, generar_filas_dux, DUX_HEADERS,
                         safe_float, validar_rendiciones_para_export)
 
 
-def escribir_export_dux_en_sheet(fecha_desde=None, fecha_hasta=None, estado=None):
+SHEET_KEY_MAP = {
+    "ID Operación": "id_operacion",
+    "Fecha": "fecha",
+    "Usuario": "usuario",
+    "Oficina": "oficina",
+    "Número de Carpeta": "numero_carpeta",
+    "Tipo de Operación": "tipo_operacion",
+    "Cliente": "cliente",
+    "Concepto": "concepto",
+    "Monto Concepto": "monto_concepto",
+    "factura_tipo": "factura_tipo",
+    "Código AFIP": "codigo_afip",
+    "Sucursal": "sucursal",
+    "Número_de_factura": "numero_factura",
+    "N°Comprobante": "n_comprobante",
+    "Proveedor_Validado": "proveedor_validado",
+    "Cuit_Proveedor_AI": "cuit_proveedor",
+    "Neto Gravado": "neto_gravado",
+    "No Gravado": "no_gravado",
+    "IVA 21%": "iva_21",
+    "IVA 10.5%": "iva_105",
+    "IVA 27%": "iva_27",
+    "Perc IVA": "perc_iva",
+    "Perc Ganancias": "perc_ganancias",
+    "Perc IIBB": "perc_iibb",
+    "Jurisdicción": "jurisdiccion",
+    "Monto Total Ticket": "monto_total_ticket",
+    "Monto a Imputar": "monto_a_imputar",
+    "Ticket URL": "ticket_url",
+    "Estado": "estado",
+    "Clave Maestra": "clave_maestra",
+    "Observaciones": "observaciones",
+    "Motivo_Rechazo": "motivo_rechazo",
+    "Revisado_Por": "revisado_por",
+    "Fecha_Revision": "fecha_revision",
+    "Cuit_Cliente": "cuit_cliente",
+}
+
+
+def _leer_y_filtrar_rendiciones(fecha_desde=None, fecha_hasta=None,
+                                 modo_parcial=False, fecha_inicio_dux=""):
+    """Reads RENDICIONES_LOG, maps to internal keys, and applies filters.
+
+    Returns:
+        list[dict] or None: filtered renditions, or None on error.
+    """
+    try:
+        _, sh = _get_sheet_handle()
+        ws_log = sh.worksheet("RENDICIONES_LOG")
+        all_records = ws_log.get_all_records()
+        if not all_records:
+            return []
+    except Exception as e:
+        logger.error(f"Error reading RENDICIONES_LOG: {e}")
+        return None
+
+    rendiciones = []
+    for record in all_records:
+        mapped = {}
+        for sheet_key, internal_key in SHEET_KEY_MAP.items():
+            mapped[internal_key] = record.get(sheet_key, "")
+        rendiciones.append(mapped)
+
+    # Date cutoff from CONFIG_EMPRESA
+    if fecha_inicio_dux:
+        rendiciones = [r for r in rendiciones
+                       if str(r.get("fecha", ""))[:10] >= fecha_inicio_dux]
+
+    # Date range filters
+    if fecha_desde:
+        fecha_desde_str = fecha_desde.isoformat()
+        rendiciones = [r for r in rendiciones
+                       if str(r.get("fecha", ""))[:10] >= fecha_desde_str]
+    if fecha_hasta:
+        fecha_hasta_str = fecha_hasta.isoformat()
+        rendiciones = [r for r in rendiciones
+                       if str(r.get("fecha", ""))[:10] <= fecha_hasta_str]
+
+    # State filter: always exclude PENDIENTE REVISIÓN and RECHAZADO
+    EXCLUIR = {"PENDIENTE REVISIÓN", "RECHAZADO"}
+    rendiciones = [r for r in rendiciones
+                   if str(r.get("estado", "")).strip().upper() not in EXCLUIR]
+
+    # Mode filter
+    if not modo_parcial:
+        # Mode A: only terminal states
+        ESTADOS_TERMINALES = {"CERRADO", "LISTA PARA AJUSTE"}
+        rendiciones = [r for r in rendiciones
+                       if str(r.get("estado", "")).strip().upper() in ESTADOS_TERMINALES]
+
+    return rendiciones
+
+
+def validar_rendiciones_pre_export(fecha_desde=None, fecha_hasta=None,
+                                    modo_parcial=False, fecha_inicio_dux=""):
+    """Pre-export validation. Returns list of errors or None on read failure."""
+    rendiciones = _leer_y_filtrar_rendiciones(fecha_desde, fecha_hasta,
+                                               modo_parcial, fecha_inicio_dux)
+    if rendiciones is None:
+        return None
+    if not rendiciones:
+        return "No hay rendiciones que coincidan con los filtros."
+
+    cuits_propios = get_cuits_propios()
+    return validar_rendiciones_para_export(
+        rendiciones,
+        codigo_concepto_fn=get_codigo_concepto_dux,
+        codigo_empleado_fn=get_codigo_empleado_dux,
+        cuits_propios=cuits_propios,
+    )
+
+
+def escribir_export_dux_en_sheet(fecha_desde=None, fecha_hasta=None,
+                                  modo_parcial=False, fecha_inicio_dux=""):
     """
     Lee RENDICIONES_LOG, filtra, genera filas ENC/DET y las escribe
     en la hoja EXPORT_DUX del mismo spreadsheet.
 
-    Args:
-        fecha_desde (date|None): filtrar rendiciones >= esta fecha.
-        fecha_hasta (date|None): filtrar rendiciones <= esta fecha.
-        estado (str|None): filtrar por estado (CERRADO, PENDIENTE, etc.).
-                           None o "Todos" = sin filtro.
-
     Returns:
         (bool, str, int): (éxito, mensaje, cantidad de filas escritas).
     """
-    client, email = get_gsheets_client()
-    if not client:
-        return False, f"No se pudieron generar credenciales. Email: {email}", 0
+    # 1. Read and filter using shared helper
+    rendiciones = _leer_y_filtrar_rendiciones(fecha_desde, fecha_hasta,
+                                               modo_parcial, fecha_inicio_dux)
+    if rendiciones is None:
+        return False, "Error leyendo RENDICIONES_LOG", 0
+    if not rendiciones:
+        return False, "No hay rendiciones que coincidan con los filtros.", 0
+
+    logger.info(f"Dux export: {len(rendiciones)} rendiciones después de filtros")
 
     try:
-        sheet_id = os.getenv("GSHEET_ID")
-        sheet_name = os.getenv("GSHEET_NAME", "SISTEMA_RENDICIONES")
-        try:
-            if "GSHEET_ID" in st.secrets:
-                sheet_id = st.secrets["GSHEET_ID"]
-            if "GSHEET_NAME" in st.secrets:
-                sheet_name = st.secrets["GSHEET_NAME"]
-        except Exception:
-            pass
+        _, sh = _get_sheet_handle()
 
-        if sheet_id:
-            sh = client.open_by_key(sheet_id)
-        else:
-            sh = client.open(sheet_name)
-
-        logger.info(f"Dux export: Spreadsheet abierto OK (gspread {gspread.__version__})")
-
-        # 0. Limpieza: borrar hoja fantasma "Hoja 6" si existe
-        try:
-            hoja_basura = sh.worksheet("Hoja 6")
-            sh.del_worksheet(hoja_basura)
-            logger.info("Dux export: Hoja 'Hoja 6' eliminada")
-        except Exception:
-            pass
-
-        # 1. Leer RENDICIONES_LOG como lista de dicts
-        ws_log = sh.worksheet("RENDICIONES_LOG")
-        all_records = ws_log.get_all_records()
-
-        if not all_records:
-            return False, "RENDICIONES_LOG está vacía.", 0
-
-        logger.info(f"Dux export: {len(all_records)} filas leídas de RENDICIONES_LOG")
-
-        # 2. Mapear headers de Sheets a claves internas de dux_export
-        SHEET_KEY_MAP = {
-            "ID Operación": "id_operacion",
-            "Fecha": "fecha",
-            "Usuario": "usuario",
-            "Oficina": "oficina",
-            "Número de Carpeta": "numero_carpeta",
-            "Tipo de Operación": "tipo_operacion",
-            "Cliente": "cliente",
-            "Concepto": "concepto",
-            "Monto Concepto": "monto_concepto",
-            "factura_tipo": "factura_tipo",
-            "Código AFIP": "codigo_afip",
-            "Sucursal": "sucursal",
-            "Número_de_factura": "numero_factura",
-            "N°Comprobante": "n_comprobante",
-            "Proveedor_Validado": "proveedor_validado",
-            "Cuit_Proveedor_AI": "cuit_proveedor",
-            "Neto Gravado": "neto_gravado",
-            "No Gravado": "no_gravado",
-            "IVA 21%": "iva_21",
-            "IVA 10.5%": "iva_105",
-            "IVA 27%": "iva_27",
-            "Perc IVA": "perc_iva",
-            "Perc Ganancias": "perc_ganancias",
-            "Perc IIBB": "perc_iibb",
-            "Jurisdicción": "jurisdiccion",
-            "Monto Total Ticket": "monto_total_ticket",
-            "Monto a Imputar": "monto_a_imputar",
-            "Ticket URL": "ticket_url",
-            "Estado": "estado",
-            "Clave Maestra": "clave_maestra",
-            "Observaciones": "observaciones",
-            "Motivo_Rechazo": "motivo_rechazo",
-            "Revisado_Por": "revisado_por",
-            "Fecha_Revision": "fecha_revision",
-            "Cuit_Cliente": "cuit_cliente",
-        }
-
-        rendiciones = []
-        for record in all_records:
-            mapped = {}
-            for sheet_key, internal_key in SHEET_KEY_MAP.items():
-                mapped[internal_key] = record.get(sheet_key, "")
-            rendiciones.append(mapped)
-
-        logger.info(f"Dux export: {len(rendiciones)} rendiciones mapeadas a claves internas")
-
-        # 3. Aplicar filtros
-        if fecha_desde:
-            fecha_desde_str = fecha_desde.isoformat()
-            rendiciones = [r for r in rendiciones
-                           if str(r.get("fecha", ""))[:10] >= fecha_desde_str]
-
-        if fecha_hasta:
-            fecha_hasta_str = fecha_hasta.isoformat()
-            rendiciones = [r for r in rendiciones
-                           if str(r.get("fecha", ""))[:10] <= fecha_hasta_str]
-
-        if estado and estado != "Todos":
-            rendiciones = [r for r in rendiciones
-                           if str(r.get("estado", "")).strip().upper() == estado.upper()]
-
-        if not rendiciones:
-            return False, "No hay rendiciones que coincidan con los filtros.", 0
-
-        logger.info(f"Dux export: {len(rendiciones)} filas después de filtros")
-
-        # 4. Generar filas ENC/DET (with dynamic lookups)
+        # 2. Generate ENC/DET rows
         cuits_propios = get_cuits_propios()
         grupos = agrupar_por_comprobante(rendiciones)
         filas_dux = generar_filas_dux(
