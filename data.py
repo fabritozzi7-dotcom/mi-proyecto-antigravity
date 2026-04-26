@@ -130,6 +130,140 @@ def load_providers_from_file():
 load_providers_from_file()
 
 # ==========================================
+# 1b. DUX MASTER DATA (SEEDS)
+# ==========================================
+
+MAESTRO_CONCEPTOS_DUX_SEED = [
+    [806, "INGRESOS OPERATIVOS"],
+    [870, "ANTICIPO GANANCIA MINIMA PRESUNTA"],
+    [911, "GASTON FLETES"],
+    [1100, "INGRESOS BRUTOS A PAGAR"],
+    [5020, "ANTICIPO DE CLIENTE"],
+    [5028, "COMPRA DE RODADO"],
+    [5066, "FORMULIARIO EXPORT.BS.AS."],
+    [5067, "FORMULARIO IMPORT.BS.AS."],
+    [5087, "SEGUNDO MOVIMIENTO"],
+    [5102, "HONOR.PROFES.CORDOBA"],
+    [5103, "TELEFONOS OFIC.CORDOBA"],
+    [5107, "AGUA, LUZ, Y GAS"],
+    [5109, "SEGUROS OFIC.CORDOBA"],
+    [5111, "FORMULARIOS IMPORT.OF.CORDOBA"],
+    [5115, "TASA COMERCIO E INDUSTRIA"],
+    [5116, "CONSORCIO OF.CORDOBA"],
+    [5117, "IMPUESTOS OFICINA CBA."],
+    [5121, "IMPUESTOS A LAS GANANCIAS"],
+    [5124, "DIFERENCIA CAJA BS.AS."],
+    [5127, "COMPRA RODADOS"],
+    [5128, "MANTENIMIENTO RODADOS"],
+    [5129, "SUELDOS A PAGAR"],
+    [5131, "APORTES Y CONTRIBUC.SOCIALES"],
+    [5132, "OTRAS DEUDAS SOCIALES"],
+    [5133, "MANTENIM.SIST.INFORMAT.CBA"],
+    [5134, "OSDE"],
+    [5136, "GASTOS JUDICIALES CORDOBA"],
+    [5137, "GASTOS REPRESENTACION CORDOBA"],
+    [5142, "TELEFONOS BUENOS AIRES"],
+    [5143, "PAPELERIA Y UTILES BS.AS"],
+    [5144, "FORMULARIOS EXPORTAC.BS.AS."],
+    [5145, "FORMULARIOS IMPORTAC BS.AS."],
+    [5146, "ALQUILER OFIC.BUENOS AIRES"],
+    [5147, "CORREO Y ENCOMIENDAS BS.AS"],
+    [5148, "GASTOS GENERALES OF. BS.AS."],
+    [5149, "MANT.SIST.INFORMATICOS.BS.AS."],
+    [5150, "MOVILIDAD ADMINISTR.BS.AS."],
+    [5151, "FOTOCOPIAS BUENOS AIRES"],
+    [5152, "SEGUROS OFICINA BAIRES"],
+    [5153, "GASTOS VIAJES OFIC BS.AS."],
+    [5154, "GASTOS BANCARIOS BAIRES"],
+    [5156, "MANTENIM BIENES USO BS.AS."],
+    [5183, "FORMULARIO IMPORT.CORDOBA"],
+    [5184, "FORMULARIO EXPORT.CORDOBA"],
+    [5188, "GASTOS VIAJES CORDOBA"],
+    [5202, "INTERESES FISCALES Y PREVISIO"],
+    [5203, "DIFERENCIAS CAJA CORDOBA"],
+    [5204, "DIFERENCIA CAJA BAIRES"],
+    [5205, "DIFERENCIAS DE CAMBIO"],
+    [5206, "OTRAS PERDIDAS"],
+    [5502, "RETENCION I.V.A."],
+    [5503, "RETENCION GANANCIAS"],
+    [5504, "ANTICIPO IMP. GANANCIAS"],
+    [5580, "IMPUESTOS NACIONALES A PAGAR"],
+    [5650, "I.V.A. COMPRAS"],
+    [5652, "IMPUESTO AL CHEQUE"],
+    [5708, "GANCHO ENTREGA"],
+    [5709, "SEGUNDO MANIPULEO"],
+    [5710, "SERVICIO A LAS CARGAS"],
+]
+
+CONFIG_EMPRESA_SEED = [
+    ["CUIT_EXPOCONSULT", "30570717630"],
+    ["FECHA_INICIO_EXPORT_DUX", "2026-05-01"],
+]
+
+
+def crear_hoja_maestro_conceptos_dux(sh):
+    """Creates and seeds MAESTRO_CONCEPTOS_DUX if it doesn't exist.
+    Idempotent: does nothing if sheet already exists.
+    """
+    try:
+        sh.worksheet("MAESTRO_CONCEPTOS_DUX")
+        return  # Already exists — don't overwrite
+    except gspread.exceptions.WorksheetNotFound:
+        pass
+
+    ws = sh.add_worksheet(title="MAESTRO_CONCEPTOS_DUX", rows=100, cols=3)
+    ws.update(range_name="A1:C1", values=[["concepto_interno", "codigo_dux", "nombre_dux"]])
+    # Seed: concepto_interno left empty (manual mapping by admin)
+    seed_rows = [["", code, name] for code, name in MAESTRO_CONCEPTOS_DUX_SEED]
+    if seed_rows:
+        ws.update(range_name=f"A2:C{1 + len(seed_rows)}", values=seed_rows)
+    logger.info(f"MAESTRO_CONCEPTOS_DUX created and seeded with {len(seed_rows)} rows")
+
+
+def crear_hoja_config_empresa(sh):
+    """Creates and seeds CONFIG_EMPRESA if it doesn't exist.
+    Idempotent: does nothing if sheet already exists.
+    """
+    try:
+        sh.worksheet("CONFIG_EMPRESA")
+        return  # Already exists
+    except gspread.exceptions.WorksheetNotFound:
+        pass
+
+    ws = sh.add_worksheet(title="CONFIG_EMPRESA", rows=20, cols=2)
+    ws.update(range_name="A1:B1", values=[["clave", "valor"]])
+    if CONFIG_EMPRESA_SEED:
+        end_row = 1 + len(CONFIG_EMPRESA_SEED)
+        ws.update(range_name=f"A2:B{end_row}", values=CONFIG_EMPRESA_SEED)
+    logger.info(f"CONFIG_EMPRESA created and seeded with {len(CONFIG_EMPRESA_SEED)} rows")
+
+
+def asegurar_columna_codigo_dux_usuarios(sh):
+    """Ensures USUARIOS sheet has a 'codigo_dux' column (D).
+    Idempotent: does nothing if column already exists.
+    """
+    try:
+        ws = sh.worksheet("USUARIOS")
+    except gspread.exceptions.WorksheetNotFound:
+        return  # USUARIOS will be created by the main sync logic
+
+    headers = ws.row_values(1)
+    headers_lower = [h.lower().strip() for h in headers]
+
+    if "codigo_dux" not in headers_lower:
+        # Ensure sheet has enough columns
+        next_col = len(headers) + 1
+        if ws.col_count < next_col:
+            ws.resize(cols=next_col)
+        from gspread.utils import rowcol_to_a1
+        cell = rowcol_to_a1(1, next_col)
+        ws.update(range_name=cell, values=[["codigo_dux"]])
+        logger.info(f"Added 'codigo_dux' column to USUARIOS at col {next_col}")
+    else:
+        logger.info("USUARIOS already has 'codigo_dux' column")
+
+
+# ==========================================
 # 2. GOOGLE SHEETS INTEGRATION
 # ==========================================
 
@@ -365,6 +499,24 @@ def sync_data_from_sheets():
             crear_hoja_config_notificaciones(sh)
         except Exception as e:
             logger.warning(f"Could not ensure CONFIG_NOTIFICACIONES: {e}")
+
+        # 7. MAESTRO_CONCEPTOS_DUX — Create and seed if missing
+        try:
+            crear_hoja_maestro_conceptos_dux(sh)
+        except Exception as e:
+            logger.warning(f"Could not ensure MAESTRO_CONCEPTOS_DUX: {e}")
+
+        # 8. CONFIG_EMPRESA — Create and seed if missing
+        try:
+            crear_hoja_config_empresa(sh)
+        except Exception as e:
+            logger.warning(f"Could not ensure CONFIG_EMPRESA: {e}")
+
+        # 9. USUARIOS.codigo_dux column — Add if missing
+        try:
+            asegurar_columna_codigo_dux_usuarios(sh)
+        except Exception as e:
+            logger.warning(f"Could not ensure codigo_dux column in USUARIOS: {e}")
 
         return True, "Sync OK"
 
