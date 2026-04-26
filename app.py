@@ -10,6 +10,15 @@ from dotenv import load_dotenv
 import data
 import notificaciones
 
+# Jurisdictions for perception selectboxes
+JURISDICCIONES_ARG = [
+    "", "BUENOS AIRES", "CABA", "CATAMARCA", "CHACO", "CHUBUT", "CORDOBA",
+    "CORRIENTES", "ENTRE RIOS", "FORMOSA", "JUJUY", "LA PAMPA", "LA RIOJA",
+    "MENDOZA", "MISIONES", "NEUQUEN", "RIO NEGRO", "SALTA", "SAN JUAN",
+    "SAN LUIS", "SANTA CRUZ", "SANTA FE", "SANTIAGO DEL ESTERO",
+    "TIERRA DEL FUEGO", "TUCUMAN", "OTRA",
+]
+
 # Load environment variables
 load_dotenv()
 
@@ -511,22 +520,120 @@ if "scanned_data" in st.session_state and final_image_bytes:
         with c3:
             num_comp_input = st.text_input("Número (8)", key="scan_num_input", max_chars=8, help="Número de la factura (ej: 00012345)")
             
-        # Conditional Input for Net Amount
-        monto_neto_input = 0.0
-        if tipo_fact_input == "A":
-            monto_neto_input = st.number_input("Monto Neto Gravado", value=monto_neto if monto_neto > 0 else 0.0)
-            
         afip_code_input = st.text_input("Código AFIP", value=default_afip)
 
-        # CUIT del Cliente (receptor) — for PROPIA/TERCEROS detection in DUX export
+        # CUIT del Cliente
         if "scan_cuit_cliente_input" not in st.session_state:
             st.session_state.scan_cuit_cliente_input = ""
         cuit_cliente_input = st.text_input(
-            "CUIT del Cliente (Receptor)",
-            key="scan_cuit_cliente_input",
+            "CUIT del Cliente (Receptor)", key="scan_cuit_cliente_input",
             placeholder="11 dígitos, solo si aparece en el comprobante",
-            help="En facturas tipo A, el CUIT del cliente suele estar debajo del emisor. Si es Expoconsult (30570717630), la factura se exporta como PROPIA."
+            help="Si es Expoconsult (30570717630), la factura se exporta como PROPIA en DUX."
         )
+
+        # --- DETALLE IMPOSITIVO (editable, with real-time validation) ---
+        st.markdown("### Detalle impositivo (revisá los valores antes de guardar)")
+
+        # Get defaults from Gemini parse or zeros
+        _des = st.session_state.get("desglose_data", {})
+        _iibb_list = st.session_state.get("perc_iibb_lista", [])
+        _muni = st.session_state.get("perc_municipal", {})
+        _is_a = tipo_fact_input == "A"
+
+        # Row 1: Neto + No Gravado + Exento
+        dc1, dc2, dc3 = st.columns(3)
+        with dc1:
+            inp_neto = st.number_input("Neto Gravado", value=float(monto_neto if _is_a else 0), step=100.0, format="%.2f", key="imp_neto")
+        with dc2:
+            inp_no_grav = st.number_input("No Gravado", value=float(_des.get("columna_R_no_gravado", monto_ticket_total if not _is_a else 0) or 0), step=100.0, format="%.2f", key="imp_no_grav")
+        with dc3:
+            inp_exento = st.number_input("Exento", value=0.0, step=100.0, format="%.2f", key="imp_exento")
+
+        # Row 2: IVA rates
+        dc4, dc5, dc6 = st.columns(3)
+        with dc4:
+            inp_iva21 = st.number_input("IVA 21%", value=float(_des.get("columna_S_iva_21", 0) or 0), step=100.0, format="%.2f", key="imp_iva21")
+        with dc5:
+            inp_iva105 = st.number_input("IVA 10.5%", value=float(_des.get("columna_T_iva_105", 0) or 0), step=100.0, format="%.2f", key="imp_iva105")
+        with dc6:
+            inp_iva27 = st.number_input("IVA 27%", value=float(_des.get("columna_U_iva_27", 0) or 0), step=100.0, format="%.2f", key="imp_iva27")
+
+        # Row 3: Perc IVA + Ganancias
+        dc7, dc8 = st.columns(2)
+        with dc7:
+            inp_perc_iva = st.number_input("Perc IVA", value=float(_des.get("columna_V_perc_iva", 0) or 0), step=100.0, format="%.2f", key="imp_perc_iva")
+        with dc8:
+            inp_perc_gcias = st.number_input("Perc Ganancias", value=float(_des.get("columna_W_perc_ganancias", 0) or 0), step=100.0, format="%.2f", key="imp_perc_gcias")
+
+        # Row 4: IIBB 1
+        st.markdown("**Percepción IIBB 1**")
+        ic1, ic2 = st.columns([1, 1])
+        _iibb1_default = float(_iibb_list[0]["monto"]) if _iibb_list else float(_des.get("columna_X_perc_iibb", 0) or 0)
+        _jur1_default = (_iibb_list[0].get("jurisdiccion", "") if _iibb_list else str(_des.get("columna_Y_jurisdiccion_code", "") or "")).upper()
+        with ic1:
+            inp_iibb1 = st.number_input("Monto IIBB 1", value=_iibb1_default, step=100.0, format="%.2f", key="imp_iibb1")
+        with ic2:
+            _jur1_idx = JURISDICCIONES_ARG.index(_jur1_default) if _jur1_default in JURISDICCIONES_ARG else 0
+            inp_jur1 = st.selectbox("Jurisdicción IIBB 1", JURISDICCIONES_ARG, index=_jur1_idx, key="imp_jur1")
+            if inp_jur1 == "OTRA":
+                inp_jur1 = st.text_input("Jurisdicción (manual)", key="imp_jur1_otra")
+
+        # Row 5: IIBB 2 (show if there's data or IIBB1 > 0)
+        _iibb2_default = float(_iibb_list[1]["monto"]) if len(_iibb_list) > 1 else 0.0
+        _jur2_default = (_iibb_list[1].get("jurisdiccion", "") if len(_iibb_list) > 1 else "").upper()
+        if _iibb2_default > 0 or inp_iibb1 > 0:
+            st.markdown("**Percepción IIBB 2**")
+            ic3, ic4 = st.columns([1, 1])
+            with ic3:
+                inp_iibb2 = st.number_input("Monto IIBB 2", value=_iibb2_default, step=100.0, format="%.2f", key="imp_iibb2")
+            with ic4:
+                _jur2_idx = JURISDICCIONES_ARG.index(_jur2_default) if _jur2_default in JURISDICCIONES_ARG else 0
+                inp_jur2 = st.selectbox("Jurisdicción IIBB 2", JURISDICCIONES_ARG, index=_jur2_idx, key="imp_jur2")
+                if inp_jur2 == "OTRA":
+                    inp_jur2 = st.text_input("Jurisdicción 2 (manual)", key="imp_jur2_otra")
+        else:
+            inp_iibb2 = 0.0
+            inp_jur2 = ""
+
+        # 3+ IIBB warning
+        if len(_iibb_list) > 2:
+            extra_total = sum(e["monto"] for e in _iibb_list[2:])
+            st.warning(
+                f"La factura tiene {len(_iibb_list)} jurisdicciones IIBB. "
+                f"Solo se cargarán las dos de mayor monto. Las restantes suman ${extra_total:,.2f}. "
+                f"Revisá manualmente o cargá las demás como rendición separada."
+            )
+
+        # Row 6: Perc Municipal (show if there's data)
+        _muni_monto = float(_muni.get("monto", 0) or 0) if _muni else 0.0
+        _muni_jur = str(_muni.get("jurisdiccion", "") or "").upper() if _muni else ""
+        if _muni_monto > 0:
+            st.markdown("**Percepción Municipal**")
+            mc1, mc2 = st.columns([1, 1])
+            with mc1:
+                inp_perc_muni = st.number_input("Monto Municipal", value=_muni_monto, step=100.0, format="%.2f", key="imp_perc_muni")
+            with mc2:
+                _muni_idx = JURISDICCIONES_ARG.index(_muni_jur) if _muni_jur in JURISDICCIONES_ARG else 0
+                inp_jur_muni = st.selectbox("Jurisdicción Municipal", JURISDICCIONES_ARG, index=_muni_idx, key="imp_jur_muni")
+                if inp_jur_muni == "OTRA":
+                    inp_jur_muni = st.text_input("Jurisdicción municipal (manual)", key="imp_jur_muni_otra")
+        else:
+            inp_perc_muni = st.number_input("Perc Municipal", value=0.0, step=100.0, format="%.2f", key="imp_perc_muni")
+            inp_jur_muni = ""
+
+        # Real-time sum validation
+        suma_componentes = (inp_neto + inp_no_grav + inp_exento + inp_iva21 + inp_iva105 + inp_iva27
+                           + inp_perc_iva + inp_perc_gcias + inp_iibb1 + inp_iibb2 + inp_perc_muni)
+        diff_check = abs(monto_ticket_total - suma_componentes)
+
+        st.markdown(f"**Suma de componentes:** ${suma_componentes:,.2f}  |  **Monto total ticket:** ${monto_ticket_total:,.2f}  |  **Diferencia:** ${diff_check:,.2f}")
+        if diff_check <= 1:
+            st.success("Los importes cuadran")
+        else:
+            st.warning(f"Los importes desglosados no suman el total. Diferencia: ${diff_check:,.2f}. Revisá los valores.")
+
+        # Store form values for payload (override desglose from Gemini)
+        monto_neto_input = inp_neto
 
 # --- MANUAL ENTRY FALLBACK (Only if NO scan AND Toggle is ON) ---
 elif modo_manual:
@@ -590,6 +697,15 @@ elif modo_manual:
         key="manual_cuit_cliente",
         placeholder="11 dígitos (solo para facturas emitidas a Expoconsult)"
     )
+    # Initialize perception vars for manual mode
+    inp_neto = monto_neto_input
+    inp_no_grav = monto_ticket_total if tipo_fact_input in ["B", "C", "Ticket"] else 0.0
+    inp_exento = 0.0
+    inp_iva21 = 0.0; inp_iva105 = 0.0; inp_iva27 = 0.0
+    inp_perc_iva = 0.0; inp_perc_gcias = 0.0
+    inp_iibb1 = 0.0; inp_jur1 = ""
+    inp_iibb2 = 0.0; inp_jur2 = ""
+    inp_perc_muni = 0.0; inp_jur_muni = ""
 else:
     # No scan and Toggle OFF -> Initialize variables to avoid NameError
     cuit_input = ""
@@ -602,6 +718,12 @@ else:
     afip_code_input = ""
     cuit_cliente_input = ""
     provider_status = "none"
+    inp_neto = 0.0; inp_no_grav = 0.0; inp_exento = 0.0
+    inp_iva21 = 0.0; inp_iva105 = 0.0; inp_iva27 = 0.0
+    inp_perc_iva = 0.0; inp_perc_gcias = 0.0
+    inp_iibb1 = 0.0; inp_jur1 = ""
+    inp_iibb2 = 0.0; inp_jur2 = ""
+    inp_perc_muni = 0.0; inp_jur_muni = ""
 
 
 # --- LOGIC: BALANCES & FLAGS ---
@@ -645,22 +767,19 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
         # Logic for Provider Validation (Column 15)
         prov_valid_txt = "Sí" if provider_status == "valid" else "No"
         
-        # Auditor Breakdown Base (Total)
-        desglose_base = st.session_state.get("desglose_data", {}).copy()
-        if not desglose_base or modo_manual:
-             # Basic manual breakdown based on type
-            if tipo_fact_input in ["B", "C", "Ticket"]:
-                desglose_base = {
-                    "columna_R_no_gravado": monto_ticket_total,
-                    "monto_total_columna_Y": monto_ticket_total
-                }
-            elif tipo_fact_input == "A":
-                desglose_base = {
-                    "neto_gravado_aux": monto_neto_input,
-                    "monto_total_columna_Z": monto_ticket_total,
-                    "columna_R_no_gravado": monto_ticket_total - monto_neto_input,
-                    "columna_V_perc_iva": 0.0
-                }
+        # Auditor Breakdown — ALWAYS from form values (operator corrections override Gemini)
+        desglose_base = {
+            "neto_gravado_aux": inp_neto,
+            "columna_R_no_gravado": inp_no_grav,
+            "columna_S_iva_21": inp_iva21,
+            "columna_T_iva_105": inp_iva105,
+            "columna_U_iva_27": inp_iva27,
+            "columna_V_perc_iva": inp_perc_iva,
+            "columna_W_perc_ganancias": inp_perc_gcias,
+            "columna_X_perc_iibb": inp_iibb1,
+            "columna_Y_jurisdiccion_code": inp_jur1,
+            "monto_total_columna_Z": monto_ticket_total,
+        }
 
         # 1. Upload to Drive (ONCE)
         ticket_link = ""
@@ -733,6 +852,14 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
                 
                 "auditor_desglose": p_desglose,             # Prorated
                 "observaciones": observaciones,
+
+                # Perception fields (prorated) for new columns AJ-AM
+                "perc_iibb_1": p_desglose.get("columna_X_perc_iibb", 0),
+                "jurisdiccion_iibb_1": p_desglose.get("columna_Y_jurisdiccion_code", ""),
+                "perc_iibb_2": inp_iibb2 / N,
+                "jurisdiccion_iibb_2": inp_jur2,
+                "perc_municipal": inp_perc_muni / N,
+                "jurisdiccion_municipal": inp_jur_muni,
 
                 # Original amounts (sin prorratear) for CONTROL_SALDOS
                 "monto_ticket_total_original": monto_ticket_total_original,
