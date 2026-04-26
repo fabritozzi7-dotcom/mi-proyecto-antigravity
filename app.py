@@ -87,86 +87,85 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
 
         # REGLAS DE NEGOCIO (ESTRICTAS)
 
-        ## 1. DETECCIÓN DE DATOS (IMPORTANTE)
-        - **IDENTIFICACIÓN DE CUIT (REGLA DE ORO):**
-            - Las facturas Tipo A y C tienen dos CUITs (Emisor y Receptor).
-            - El **CUIT del PROVEEDOR (Emisor)** siempre está en el ENCABEZADO (parte superior del ticket). Es el PRIMERO que aparece.
-            - El CUIT del Cliente (Nosotros) está más abajo.
-            - **CRÍTICO:** Debes tomar el CUIT que está en la parte superior del comprobante.
-        - **Factura B:** Suele tener solo el CUIT del emisor.
-        - **Factura C:** Aplica la misma regla que la A (Proveedor arriba, Cliente abajo).
+        ## 1. DETECCIÓN DE CUITs
+        - Las facturas Tipo A y C tienen dos CUITs (Emisor y Receptor).
+        - El **CUIT del PROVEEDOR (Emisor)** siempre está en el ENCABEZADO (parte superior). Es el PRIMERO que aparece. → campo `cuit_proveedor`.
+        - El **CUIT del Cliente (Receptor)** está más abajo en el comprobante. → campo `cuit_cliente`.
+        - Factura B: suele tener solo el CUIT del emisor. `cuit_cliente` = null.
+        - Factura C: aplica la misma regla que la A.
 
-        ## 2. LÓGICA POR TIPO
-        - **TIPO DE COMPROBANTE:** Identifica la LETRA (A, B, C, M).
+        ## 2. DATOS BÁSICOS DEL COMPROBANTE
+        - **TIPO:** Identifica la LETRA (A, B, C, M) o "TICKET".
         - **CÓDIGO AFIP:** Busca "COD. XX" (ej: 001, 006, 011). Normalízalo a 3 dígitos.
-        - **PUNTO DE VENTA (SUCURSAL):** 
-            - El Punto de Venta (PV) es siempre de 4 o 5 dígitos.
-            - **Opesa/Combustibles:** NO confundas el "Nro. Estación" (ej: Station 123) con el PV. El PV suele aparecer como `PV: 00010` o `00010-00000001`.
-            - Si ves una cadena `XXXXX-YYYYYYYY`, el `XXXXX` es la sucursal/PV.
+        - **PUNTO DE VENTA (SUCURSAL):** 4 o 5 dígitos. Si ves `XXXXX-YYYYYYYY`, el `XXXXX` es la sucursal.
+        - **Opesa/Combustibles:** NO confundas "Nro. Estación" con el PV.
 
-        ## 2. LÓGICA PARA FACTURA TIPO "A" (Discriminación Obligatoria)
-        Debes desglosar cada centavo del ticket.
-        - **Neto Gravado:** Identifica la base imponible.
-        - **IVA (Tasas):** Identifica y separa los montos por tasa (21%, 10.5%, 27%).
-        - **Percepciones (REGLA DE ORO):**
-            - **IVA:** Busca "Perc. IVA" o similar.
-            - **Ganancias:** Busca "Perc. Ganancias" o similar.
-            - **IIBB:** Busca "Perc. IIBB" o "Ingresos Brutos".
-        - **No Gravado (REGLA DE ORO):** Suma aquí TODO impuesto, tasa o cargo extra que NO sea IVA ni Percepción (IVA/IIBB/Ganancias). 
-            - Incluye: Tasas Municipales, Impuestos Internos (Combustibles Líquidos), Fondo Hídrico, etc. 
-            - **Cualquier monto que no sea IVA o Percepción va a esta columna.**
+        ## 3. LÓGICA PARA FACTURA TIPO "A" (Discriminación Obligatoria)
+        Debes desglosar cada centavo del ticket en los campos individuales.
+        - **neto_gravado:** base imponible.
+        - **no_gravado:** montos exentos, impuestos internos (combustibles líquidos, fondo hídrico), cargos que NO son IVA ni percepciones.
+        - **exento:** bienes/servicios exentos de IVA si se discriminan.
+        - **IVA:** separar por alícuota (21%, 10.5%, 27%).
+        - **IMPORTANTE:** NO mezclar Percepción Municipal con No Gravado. La Percepción Municipal va en `perc_municipal`.
 
-        ## IMPORTANTE: JURISDICCIÓN (CONDICIONAL)
-        La jurisdicción depende del origen del emisor y solo se informa si hay "Percepción de IIBB" > 0.
-        - **Códigos Requeridos:** Córdoba -> "OB", Capital Federal (CABA) -> "CF". 
-        - Otros: Buenos Aires -> "BA", Santa Fe -> "SF", Mendoza -> "MZ".
-        - **SI hay Percepción de IIBB:** Asigna el código correspondiente en `columna_Y_jurisdiccion_code`.
-        - **SI NO hay Percepción de IIBB:** Asigna `null`.
+        ## 4. CLASIFICACIÓN DE LÍNEAS DE PERCEPCIONES (CRÍTICO)
+        Identificá cada línea individualmente. **NO sumes líneas distintas.**
 
-        ## 3. LÓGICA PARA FACTURA TIPO "B" o "C" (Agrupación Total)
-        - **IMPORTANTE:** NUNCA DISCRIMINES IMPUESTOS EN B O C.
-        - Todo el valor del ticket (100%) va a la columna **"No Gravado"** (Columna R).
+        - Líneas que contengan "PERC IVA" o "PER IVA" o "RG 2408" o "R.G. 2408" → `perc_iva` (un solo valor numérico).
+        - Líneas que contengan "PER IB" o "PERC IIBB" o "Per IIBB" o "ING BRUTOS" → entrada en `perc_iibb_lista`. Cada línea es UNA entrada distinta con su jurisdicción.
+          Para la jurisdicción, usá esta tabla de códigos:
+            CBAD, CBA, CORDOBA → "CORDOBA"
+            CABA, CAPFED, CFED → "CABA"
+            BSAS, BSA, BUENOSAIRES → "BUENOS AIRES"
+            MZA, MENDOZA → "MENDOZA"
+            SFE, SANTAFE → "SANTA FE"
+            NQN, NEUQUEN → "NEUQUEN"
+          Si el código no coincide con ninguno conocido, usá el texto literal en mayúsculas.
+        - Líneas que contengan "Per Mun" o "PERC MUN" o "MUNICIPAL" → `perc_municipal` (objeto único, NO array). Si hay más de una, sumalas en el monto pero registrá la jurisdicción de la primera.
+        - Líneas que contengan "PERC GCIAS" o "PER GAN" o "RG 830" → `perc_ganancias`.
+        - Si el ticket muestra "TOTAL DESCUENTOS" o líneas con valor negativo, ignorarlas.
+        - Si una línea tiene formato "PERC X.XX% [BASE] MONTO", el MONTO es el último número de la línea.
 
-        ## 4. VALIDACIÓN DE INTEGRIDAD MATEMÁTICA
-        - **VALIDACIÓN BASE (HEURÍSTICA 21%):** Si el ticket es simple, verifica si `Neto Gravado * 0.21` coincide con el IVA. 
-            - Si NO coincide, es un **Caso Especial** (múltiples alícuotas o cargos extras); revisa con cuidado.
-        - **Suma de Control:** 
-        `SUMA = (No Gravado + Neto Gravado + IVA 21 + IVA 10.5 + IVA 27 + Perc. IVA + Perc. Gcias + Perc. IIBB)`
-        - La `SUMA` debe ser **EXACTAMENTE IGUAL** al **Monto Total**.
-        - Si hay diferencia menor a $0.05 por redondeo, ajústalo en "No Gravado".
-        - La `SUMA` debe ser **EXACTAMENTE IGUAL** al **Monto Total**.
-        - Si hay diferencia menor a $0.05 por redondeo, ajústalo en "No Gravado".
+        ## 5. LÓGICA PARA FACTURA TIPO "B" o "C" (Agrupación Total)
+        - **NUNCA DISCRIMINES IMPUESTOS EN B O C.**
+        - Todo el valor del ticket (100%) va al campo `no_gravado`. Todos los demás campos impositivos en 0.
+
+        ## 6. VALIDACIÓN INTERNA ANTES DE DEVOLVER
+        Calculá:
+        `suma = neto_gravado + no_gravado + exento + iva_21 + iva_10_5 + iva_27 + perc_iva + perc_ganancias + sum(perc_iibb_lista[].monto) + (perc_municipal.monto if perc_municipal else 0)`
+        Si `abs(suma - monto_total) > 1`, revisá tu extracción. Si la diferencia persiste, devolvé el JSON con `"warning_total_no_cuadra": true`.
 
         # FORMATO DE SALIDA (JSON)
-        Devuelve ÚNICAMENTE un objeto JSON con esta estructura exacta para mapear al Google Sheet:
+        Devuelve ÚNICAMENTE un objeto JSON con esta estructura exacta:
 
         {
-          "tipo_factura": "String (A, B, C, TICKET)",
-          "codigo_afip": "String (001, 006, etc) o null", 
+          "tipo_factura": "String (A, B, C, M, TICKET)",
+          "codigo_afip": "String (001, 006, etc) o null",
           "fecha": "DD/MM/AAAA",
-          "proveedor": "String (Nombre de fantasía o Razón Social)",
-          "cuit": "String (CUIT del PROVEEDOR/EMISOR, solo números, sin guiones)",
-          "cuit_cliente": "String (CUIT del CLIENTE/RECEPTOR si aparece en el comprobante, solo números, sin guiones) o null",
-          "sucursal": "Punto de venta (5 digitos)",
-          "numero_comprobante": "Numero (8 digitos)",
-          "monto_total_columna_Z": Number (Float, el total a pagar),
-          "desglose": {
-            "columna_R_no_gravado": Number (Float. Si es B/C aquí va el TOTAL. Si es A, van exentos/imp internos),
-            "columna_S_iva_21": Number (Float),
-            "columna_T_iva_105": Number (Float),
-            "columna_U_iva_27": Number (Float),
-            "columna_V_perc_iva": Number (Float),
-            "columna_W_perc_ganancias": Number (Float),
-            "columna_X_perc_iibb": Number (Float),
-            "columna_Y_jurisdiccion_code": "String (ej: CF, BA, OB) o null",
-            "neto_gravado_aux": Number (Float, aunque no se pide explícito en columnas R-Y, es necesario para cálculos (Col Q))
-          },
-          "validacion_check": "String (OK si la suma cuadra, ERROR si no)"
+          "proveedor": "String (Nombre o Razón Social)",
+          "cuit_proveedor": "String (11 dígitos sin guiones)",
+          "cuit_cliente": "String (11 dígitos sin guiones) o null",
+          "sucursal": "String (5 dígitos)",
+          "numero_comprobante": "String (8 dígitos)",
+          "neto_gravado": Number,
+          "no_gravado": Number,
+          "exento": Number,
+          "iva_21": Number,
+          "iva_10_5": Number,
+          "iva_27": Number,
+          "perc_iva": Number,
+          "perc_ganancias": Number,
+          "perc_iibb_lista": [
+            {"jurisdiccion": "String", "monto": Number}
+          ],
+          "perc_municipal": {"jurisdiccion": "String", "monto": Number} o null,
+          "monto_total": Number,
+          "warning_total_no_cuadra": Boolean (true si la suma no cuadra)
         }
 
         ## REGLAS DE SEGURIDAD (LEGIBILIDAD)
         - **SI EL TICKET ES ILEGIBLE, ESTÁ BORROSO O CORTADO:** No intentes adivinar datos.
-        - Devuelve `null` en los campos que no puedas leer con certeza absoluta (especialmente CUIT y Montos).
+        - Devuelve `null` en los campos que no puedas leer con certeza absoluta (especialmente CUITs y Montos).
         - El sistema detectará los `null` y pedirá carga manual al usuario.
         - Prioriza siempre la precisión sobre la inferencia.
         """
@@ -340,7 +339,7 @@ with st.container(border=True):
                         if st.session_state.scan_tipo_input not in ["A", "B", "C", "M", "Ticket"]:
                             st.session_state.scan_tipo_input = "C"
                         
-                        st.session_state.scan_cuit_input = str(scan_result.get("cuit") or "")
+                        st.session_state.scan_cuit_input = str(scan_result.get("cuit_proveedor") or scan_result.get("cuit") or "")
                         st.session_state.scan_cuit_cliente_input = str(scan_result.get("cuit_cliente") or "")
                         st.session_state.scan_provider_input = str(scan_result.get("proveedor") or "")
                         
@@ -381,23 +380,50 @@ if "scanned_data" in st.session_state and final_image_bytes:
         default_num = str(data_ia.get("numero_comprobante") or "").replace("-","")
         default_afip = str(data_ia.get("codigo_afip") or "")
 
-        # New Auditor Fields
+        # New Auditor Fields — parse from flat JSON (new format) or nested desglose (legacy)
         try:
-            # Extract Desglose
-            desglose = data_ia.get("desglose", {})
-            st.session_state.desglose_data = desglose # Store for payload
-            
-            # Helper for imputation base
-            monto_ticket_total = float(data_ia.get("monto_total_columna_Z") or data_ia.get("monto_total_columna_Y") or 0.0)
-            monto_neto = float(desglose.get("neto_gravado_aux") or 0.0)
-             
-            # Validation Check
-            val_check = data_ia.get("validacion_check", "N/A")
-            if val_check != "OK":
-                st.warning(f"⚠️ Alerta Auditoría: {val_check}")
+            monto_ticket_total = float(data_ia.get("monto_total") or data_ia.get("monto_total_columna_Z") or 0.0)
+            monto_neto = float(data_ia.get("neto_gravado") or 0.0)
+
+            # Build desglose from flat fields (new Gemini format)
+            if "neto_gravado" in data_ia and "desglose" not in data_ia:
+                # New format — build compatible desglose for backward compat
+                iibb_lista = data_ia.get("perc_iibb_lista") or []
+                perc_muni = data_ia.get("perc_municipal") or {}
+                desglose = {
+                    "neto_gravado_aux": monto_neto,
+                    "columna_R_no_gravado": float(data_ia.get("no_gravado") or 0),
+                    "columna_S_iva_21": float(data_ia.get("iva_21") or 0),
+                    "columna_T_iva_105": float(data_ia.get("iva_10_5") or 0),
+                    "columna_U_iva_27": float(data_ia.get("iva_27") or 0),
+                    "columna_V_perc_iva": float(data_ia.get("perc_iva") or 0),
+                    "columna_W_perc_ganancias": float(data_ia.get("perc_ganancias") or 0),
+                    "columna_X_perc_iibb": float(iibb_lista[0]["monto"]) if iibb_lista else 0,
+                    "columna_Y_jurisdiccion_code": iibb_lista[0].get("jurisdiccion", "") if iibb_lista else "",
+                    "monto_total_columna_Z": monto_ticket_total,
+                }
+                # Store extended perception data in session for the form
+                st.session_state.perc_iibb_lista = iibb_lista
+                st.session_state.perc_municipal = perc_muni
             else:
-                st.info("✅ Auditoría: Suma de control OK")
-                
+                # Legacy format
+                desglose = data_ia.get("desglose", {})
+                monto_neto = float(desglose.get("neto_gravado_aux") or 0.0)
+                st.session_state.perc_iibb_lista = []
+                st.session_state.perc_municipal = {}
+
+            st.session_state.desglose_data = desglose
+
+            # Validation Check
+            if data_ia.get("warning_total_no_cuadra"):
+                st.warning("⚠️ Alerta Auditoría: Los importes extraídos no suman el total del ticket.")
+            else:
+                val_check = data_ia.get("validacion_check", "N/A")
+                if val_check == "OK":
+                    st.info("✅ Auditoría: Suma de control OK")
+                elif val_check != "N/A":
+                    st.warning(f"⚠️ Alerta Auditoría: {val_check}")
+
         except Exception as e:
             st.error(f"Error parsing AI data: {e}")
             monto_ticket_total = 0.0
