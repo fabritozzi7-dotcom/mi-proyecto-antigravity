@@ -803,6 +803,9 @@ with st.expander("⚙️ Administración (Exportación Dux)", expanded=False):
         fecha_inicio_dux = data.get_fecha_inicio_export_dux()
         if fecha_inicio_dux:
             st.caption(f"Cutoff DUX: solo rendiciones con fecha >= {fecha_inicio_dux}")
+        else:
+            st.error("Configurar FECHA_INICIO_EXPORT_DUX en CONFIG_EMPRESA antes del primer export.")
+            fecha_inicio_dux = ""  # Will block export via validation
 
         col_f1, col_f2 = st.columns(2)
         with col_f1:
@@ -829,6 +832,10 @@ with st.expander("⚙️ Administración (Exportación Dux)", expanded=False):
 
         # Validation step
         if st.button("Validar antes de exportar", use_container_width=True, key="btn_validar_dux"):
+            # Clear lookup caches so admin sees fresh data after edits
+            data._leer_maestro_conceptos_dux.clear()
+            data._leer_codigos_empleado_dux.clear()
+            data._leer_config_empresa.clear()
             with st.spinner("Validando rendiciones..."):
                 from dux_export import validar_rendiciones_para_export
                 # Get renditions using the same filter logic as export
