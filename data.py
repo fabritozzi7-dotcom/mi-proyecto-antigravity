@@ -264,55 +264,52 @@ def asegurar_columna_codigo_dux_usuarios(sh):
 
 
 def migrar_headers_rendiciones_log(sh):
-    """Idempotent migration: rename perception headers and add new columns.
+    """Idempotent migration: fill GAP headers and add Fecha_Revision at end.
 
-    Renames:
-    - pos 23 (X): 'Perc IIBB' → 'Perc_IIBB_1'
-    - pos 24 (Y): 'Jurisdicción' → 'Jurisdiccion_IIBB_1'
+    Does NOT rename existing headers (Camino A: code adapts to real headers).
+    Only fills empty positions and appends new columns:
+    - pos 32 (AG): Cuit_Cliente (if empty)
+    - pos 33 (AH): Motivo_Rechazo (if empty)
+    - pos 34 (AI): Revisado_Por (if empty)
+    - pos 39 (AN): Fecha_Revision (if missing)
 
-    Adds (if missing):
-    - Perc_IIBB_2, Jurisdiccion_IIBB_2, Perc_Municipal, Jurisdiccion_Municipal
+    Existing headers at pos 23 (Percepción IIBB) and 24 (Provincia/Jurisdicción)
+    are NOT renamed — SHEET_KEY_MAP maps them to internal keys directly.
+    Existing headers at pos 35-38 (Perc_IIBB_2 etc.) are left as-is.
     """
     try:
         ws = sh.worksheet("RENDICIONES_LOG")
     except gspread.exceptions.WorksheetNotFound:
-        return  # No sheet to migrate
+        return
 
     headers = ws.row_values(1)
     if not headers:
         return
 
+    headers_upper = [h.strip().upper() for h in headers]
     updates = []
 
-    # Rename existing headers by checking current value
-    # pos 23 (col X, 1-based col 24)
-    if len(headers) > 23:
-        current_x = headers[23].strip()
-        if current_x in ("Perc IIBB", "Perc_IIBB"):
-            updates.append({"range": "X1", "values": [["Perc_IIBB_1"]]})
-    # pos 24 (col Y, 1-based col 25)
-    if len(headers) > 24:
-        current_y = headers[24].strip()
-        if current_y in ("Jurisdicción", "Jurisdiccion"):
-            updates.append({"range": "Y1", "values": [["Jurisdiccion_IIBB_1"]]})
-
-    # Add new headers at end if missing
-    headers_upper = [h.strip().upper() for h in headers]
-    NEW_HEADERS = [
-        ("Perc_IIBB_2", "AJ"),
-        ("Jurisdiccion_IIBB_2", "AK"),
-        ("Perc_Municipal", "AL"),
-        ("Jurisdiccion_Municipal", "AM"),
+    # Fill GAP positions (32, 33, 34) if currently empty
+    GAP_FILLS = [
+        (32, "AG", "Cuit_Cliente"),
+        (33, "AH", "Motivo_Rechazo"),
+        (34, "AI", "Revisado_Por"),
     ]
-    for name, col_letter in NEW_HEADERS:
-        if name.upper() not in headers_upper:
-            # Ensure enough columns
-            col_idx = ord(col_letter[0]) - ord('A')
-            if len(col_letter) > 1:
-                col_idx = (col_idx + 1) * 26 + (ord(col_letter[1]) - ord('A'))
-            if ws.col_count <= col_idx:
-                ws.resize(cols=col_idx + 1)
+    for pos, col_letter, name in GAP_FILLS:
+        if pos < len(headers) and not headers[pos].strip():
             updates.append({"range": f"{col_letter}1", "values": [[name]]})
+        elif pos >= len(headers):
+            # Position doesn't exist yet — need to extend
+            if ws.col_count <= pos:
+                ws.resize(cols=pos + 1)
+            updates.append({"range": f"{col_letter}1", "values": [[name]]})
+
+    # Add Fecha_Revision at pos 39 (AN) if not present
+    if "FECHA_REVISION" not in headers_upper:
+        target_col = 39  # 0-indexed
+        if ws.col_count <= target_col:
+            ws.resize(cols=target_col + 1)
+        updates.append({"range": "AN1", "values": [["Fecha_Revision"]]})
 
     if updates:
         ws.batch_update(updates)
