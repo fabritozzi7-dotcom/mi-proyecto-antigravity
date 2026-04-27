@@ -35,46 +35,50 @@ JURISDICCION_A_DUX = {
 }
 
 # Headers de RENDICIONES_LOG → clave interna (por posición 0-30)
+# Maps RENDICIONES_LOG columns by position (0-indexed) to internal keys.
+# Must match the REAL production header order exactly.
+# Used by fila_a_dict() for positional row parsing.
 HEADER_MAP = [
-    "id_operacion",        # 0  (A)
-    "fecha",               # 1  (B)
-    "usuario",             # 2  (C)
-    "oficina",             # 3  (D)
-    "numero_carpeta",      # 4  (E)
-    "tipo_operacion",      # 5  (F)
-    "cliente",             # 6  (G)
-    "concepto",            # 7  (H)
-    "monto_concepto",      # 8  (I)
-    "factura_tipo",        # 9  (J)
-    "codigo_afip",         # 10 (K)
-    "sucursal",            # 11 (L)
-    "numero_factura",      # 12 (M)
-    "n_comprobante",       # 13 (N)
-    "proveedor_validado",  # 14 (O)
-    "cuit_proveedor",      # 15 (P)
-    "neto_gravado",        # 16 (Q)
-    "no_gravado",          # 17 (R)
-    "iva_21",              # 18 (S)
-    "iva_105",             # 19 (T)
-    "iva_27",              # 20 (U)
-    "perc_iva",            # 21 (V)
-    "perc_ganancias",      # 22 (W)
-    "perc_iibb",           # 23 (X)
-    "jurisdiccion",        # 24 (Y)
-    "monto_total_ticket",  # 25 (Z)
-    "monto_a_imputar",     # 26 (AA)
-    "ticket_url",          # 27 (AB)
-    "estado",              # 28 (AC)
-    "clave_maestra",       # 29 (AD)
-    "observaciones",       # 30 (AE)
-    "motivo_rechazo",      # 31 (AF)
-    "revisado_por",        # 32 (AG)
-    "fecha_revision",      # 33 (AH)
-    "cuit_cliente",        # 34 (AI)
-    "perc_iibb_2",         # 35 (AJ)
-    "jurisdiccion_iibb_2", # 36 (AK)
-    "perc_municipal",      # 37 (AL)
-    "jurisdiccion_municipal", # 38 (AM)
+    "id_operacion",        # 0  (A)  ID Operación
+    "fecha",               # 1  (B)  Fecha
+    "usuario",             # 2  (C)  Usuario
+    "oficina",             # 3  (D)  Oficina
+    "numero_carpeta",      # 4  (E)  Número de Carpeta (Obligatorio)
+    "tipo_operacion",      # 5  (F)  Tipo de Operación
+    "cliente",             # 6  (G)  Cliente
+    "concepto",            # 7  (H)  Concepto
+    "monto_concepto",      # 8  (I)  Monto Concepto
+    "factura_tipo",        # 9  (J)  factura_tipo
+    "codigo_afip",         # 10 (K)  Código AFIP
+    "sucursal",            # 11 (L)  Sucursal
+    "numero_factura",      # 12 (M)  Número_de_factura
+    "n_comprobante",       # 13 (N)  N°Comprobante
+    "proveedor_validado",  # 14 (O)  Proveedor_Validado
+    "cuit_proveedor",      # 15 (P)  Cuit_Proveedor_AI
+    "neto_gravado",        # 16 (Q)  Gravado
+    "no_gravado",          # 17 (R)  No_Gravado
+    "iva_21",              # 18 (S)  IVA_21 (VALOR IVA SOBRE VALOR GRAVADO)
+    "iva_105",             # 19 (T)  IVA_10_5
+    "iva_27",              # 20 (U)  IVA_27
+    "perc_iva",            # 21 (V)  Percepción_IVA
+    "perc_ganancias",      # 22 (W)  Percepción_Ganancia
+    "perc_iibb",           # 23 (X)  Percepción IIBB
+    "jurisdiccion",        # 24 (Y)  Provincia/Jurisdicción
+    "monto_total_ticket",  # 25 (Z)  Monto Ticket
+    "monto_a_imputar",     # 26 (AA) Monto a Imputar
+    "ticket_url",          # 27 (AB) Ticket URL
+    "estado",              # 28 (AC) Estado Saldos
+    "clave_maestra",       # 29 (AD) Clave Maestra
+    "observaciones",       # 30 (AE) Observaciones
+    "aviso_mail",          # 31 (AF) Aviso_Mail
+    "cuit_cliente",        # 32 (AG) Cuit_Cliente
+    "motivo_rechazo",      # 33 (AH) Motivo_Rechazo
+    "revisado_por",        # 34 (AI) Revisado_Por
+    "perc_iibb_2",         # 35 (AJ) Perc_IIBB_2
+    "jurisdiccion_iibb_2", # 36 (AK) Jurisdiccion_IIBB_2
+    "perc_municipal",      # 37 (AL) Perc_Municipal
+    "jurisdiccion_municipal", # 38 (AM) Jurisdiccion_Municipal
+    "fecha_revision",      # 39 (AN) Fecha_Revision
 ]
 
 DUX_HEADERS = [
@@ -383,7 +387,13 @@ def _construir_det(rend, tipo_factura_dux, codigo_concepto_fn=None, codigo_emple
 
 
 def _sumar_desglose(grupo):
-    """Suma los desgloses fiscales prorrateados de un grupo de rendiciones."""
+    """Suma los desgloses fiscales prorrateados de un grupo de rendiciones.
+
+    IMPORTANT: This function expects dicts already mapped to INTERNAL keys
+    via SHEET_KEY_MAP (e.g. "neto_gravado", "perc_iibb", "jurisdiccion").
+    If it receives dicts with raw sheet headers, it will silently return 0s.
+    The mapping chain is: get_all_records() → SHEET_KEY_MAP → this function.
+    """
     totales = {
         "neto_gravado": 0.0,
         "no_gravado": 0.0,

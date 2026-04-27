@@ -859,7 +859,7 @@ def find_available_invoice_balance(cuit_provider, amount_needed):
             
             if row_cuit == target_cuit:
                 try:
-                    saldo = float(str(r.get("Saldo Disponible", 0)).replace("$","").replace(",",""))
+                    saldo = float(str(r.get("Saldo Restante", 0)).replace("$","").replace(",",""))
                 except:
                     saldo = 0.0
                 
@@ -1250,12 +1250,12 @@ def recalcular_control_saldos():
             primer = grupo["records"][0]
             tipo = grupo["tipo"]
 
-            # Determinar Respaldo
+            # Determinar Respaldo (uses REAL header names from production sheet)
             if tipo == "A":
-                respaldo = safe_float(primer.get("Neto Gravado", 0)) + \
-                           safe_float(primer.get("No Gravado", 0))
+                respaldo = safe_float(primer.get("Gravado", 0)) + \
+                           safe_float(primer.get("No_Gravado", 0))
             else:
-                respaldo = safe_float(primer.get("Monto Total Ticket", 0))
+                respaldo = safe_float(primer.get("Monto Ticket", 0))
 
             # Sumar todos los monto_a_imputar
             total_imputado = sum(
@@ -1279,7 +1279,8 @@ def recalcular_control_saldos():
         ws_saldos = sh.worksheet("CONTROL_SALDOS")
         ws_saldos.clear()
 
-        header = ["Cuit_Proveedor", "ID_Factura", "Respaldo", "Total_Imputado", "Saldo Disponible", "Estado"]
+        # Must match REAL production headers in CONTROL_SALDOS
+        header = ["Cuit_Proveedor", "ID Factura", "Respaldo (Neto/Total)", "Total Imputado", "Saldo Restante", "Estado Dux"]
         all_data = [header] + filas_saldos
 
         if len(filas_saldos) > 0:
@@ -1602,48 +1603,50 @@ from dux_export import (agrupar_por_comprobante, generar_filas_dux, DUX_HEADERS,
                         safe_float, validar_rendiciones_para_export)
 
 
+# Maps REAL production headers → internal keys used by dux_export and business logic.
+# _sumar_desglose() and other functions expect dicts with these internal keys.
+# If you change a header name in the sheet, update the LEFT side here.
 SHEET_KEY_MAP = {
-    "ID Operación": "id_operacion",
-    "Fecha": "fecha",
-    "Usuario": "usuario",
-    "Oficina": "oficina",
-    "Número de Carpeta": "numero_carpeta",
-    "Tipo de Operación": "tipo_operacion",
-    "Cliente": "cliente",
-    "Concepto": "concepto",
-    "Monto Concepto": "monto_concepto",
-    "factura_tipo": "factura_tipo",
-    "Código AFIP": "codigo_afip",
-    "Sucursal": "sucursal",
-    "Número_de_factura": "numero_factura",
-    "N°Comprobante": "n_comprobante",
-    "Proveedor_Validado": "proveedor_validado",
-    "Cuit_Proveedor_AI": "cuit_proveedor",
-    "Neto Gravado": "neto_gravado",
-    "No Gravado": "no_gravado",
-    "IVA 21%": "iva_21",
-    "IVA 10.5%": "iva_105",
-    "IVA 27%": "iva_27",
-    "Perc IVA": "perc_iva",
-    "Perc Ganancias": "perc_ganancias",
-    "Perc IIBB": "perc_iibb",
-    "Perc_IIBB_1": "perc_iibb",
-    "Jurisdicción": "jurisdiccion",
-    "Jurisdiccion_IIBB_1": "jurisdiccion",
-    "Monto Total Ticket": "monto_total_ticket",
-    "Monto a Imputar": "monto_a_imputar",
-    "Ticket URL": "ticket_url",
-    "Estado": "estado",
-    "Clave Maestra": "clave_maestra",
-    "Observaciones": "observaciones",
-    "Motivo_Rechazo": "motivo_rechazo",
-    "Revisado_Por": "revisado_por",
-    "Fecha_Revision": "fecha_revision",
-    "Cuit_Cliente": "cuit_cliente",
-    "Perc_IIBB_2": "perc_iibb_2",
-    "Jurisdiccion_IIBB_2": "jurisdiccion_iibb_2",
-    "Perc_Municipal": "perc_municipal",
-    "Jurisdiccion_Municipal": "jurisdiccion_municipal",
+    "ID Operación": "id_operacion",                         # A (0)
+    "Fecha": "fecha",                                        # B (1)
+    "Usuario": "usuario",                                    # C (2)
+    "Oficina": "oficina",                                    # D (3)
+    "Número de Carpeta (Obligatorio)": "numero_carpeta",     # E (4)
+    "Tipo de Operación": "tipo_operacion",                   # F (5)
+    "Cliente": "cliente",                                    # G (6)
+    "Concepto": "concepto",                                  # H (7)
+    "Monto Concepto": "monto_concepto",                      # I (8)
+    "factura_tipo": "factura_tipo",                           # J (9)
+    "Código AFIP": "codigo_afip",                            # K (10)
+    "Sucursal": "sucursal",                                  # L (11)
+    "Número_de_factura": "numero_factura",                   # M (12)
+    "N°Comprobante": "n_comprobante",                        # N (13)
+    "Proveedor_Validado": "proveedor_validado",              # O (14)
+    "Cuit_Proveedor_AI": "cuit_proveedor",                   # P (15)
+    "Gravado": "neto_gravado",                               # Q (16)
+    "No_Gravado": "no_gravado",                              # R (17)
+    "IVA_21 (VALOR IVA SOBRE VALOR GRAVADO)": "iva_21",     # S (18)
+    "IVA_10_5": "iva_105",                                   # T (19)
+    "IVA_27": "iva_27",                                      # U (20)
+    "Percepción_IVA": "perc_iva",                            # V (21)
+    "Percepción_Ganancia": "perc_ganancias",                 # W (22)
+    "Percepción IIBB": "perc_iibb",                          # X (23)
+    "Provincia/Jurisdicción": "jurisdiccion",                # Y (24)
+    "Monto Ticket": "monto_total",                           # Z (25)
+    "Monto a Imputar": "monto_a_imputar",                    # AA (26)
+    "Ticket URL": "ticket_url",                              # AB (27)
+    "Estado Saldos": "estado",                               # AC (28)
+    "Clave Maestra": "clave_maestra",                        # AD (29)
+    "Observaciones": "observaciones",                        # AE (30)
+    "Aviso_Mail": "aviso_mail",                              # AF (31)
+    "Cuit_Cliente": "cuit_cliente",                          # AG (32)
+    "Motivo_Rechazo": "motivo_rechazo",                      # AH (33)
+    "Revisado_Por": "revisado_por",                          # AI (34)
+    "Perc_IIBB_2": "perc_iibb_2",                           # AJ (35)
+    "Jurisdiccion_IIBB_2": "jurisdiccion_iibb_2",           # AK (36)
+    "Perc_Municipal": "perc_municipal",                      # AL (37)
+    "Jurisdiccion_Municipal": "jurisdiccion_municipal",      # AM (38)
+    "Fecha_Revision": "fecha_revision",                      # AN (39)
 }
 
 
