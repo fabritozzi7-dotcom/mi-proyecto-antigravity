@@ -1001,25 +1001,26 @@ def log_rendicion_to_sheet(payload, ticket_url="", estado_override=None):
             clave_unica,                                # 30 (AD). Clave Maestra
             payload.get("observaciones", ""),            # 31 (AE). Observaciones
 
-            # --- AUDIT COLUMNS (AF-AH) ---
-            "",                                         # 32 (AF). Motivo_Rechazo
-            "",                                         # 33 (AG). Revisado_Por
-            "",                                         # 34 (AH). Fecha_Revision
-
-            # --- DUX COLUMNS (AI) ---
+            # --- RECONCILED COLUMNS (AF-AN) matching production layout ---
+            "",                                         # 32 (AF). Aviso_Mail (not used by code)
             str(payload.get("cuit_cliente", "") or "").replace("-", "").replace(" ", "").strip(),
-                                                        # 35 (AI). Cuit_Cliente
+                                                        # 33 (AG). Cuit_Cliente
+            "",                                         # 34 (AH). Motivo_Rechazo
+            "",                                         # 35 (AI). Revisado_Por
 
-            # --- PERCEPTION COLUMNS (AJ-AM) ---
-            # NOTE: proration divides all numeric payload values by N in the save loop.
-            # These perception values are prorated alongside the original desglose fields.
+            # Perception columns (prorated alongside desglose fields)
             payload.get("perc_iibb_2", 0),              # 36 (AJ). Perc_IIBB_2
             payload.get("jurisdiccion_iibb_2", ""),      # 37 (AK). Jurisdiccion_IIBB_2
             payload.get("perc_municipal", 0),            # 38 (AL). Perc_Municipal
             payload.get("jurisdiccion_municipal", ""),   # 39 (AM). Jurisdiccion_Municipal
+            "",                                         # 40 (AN). Fecha_Revision
         ]
 
-        ws_log.append_row(row)
+        # Use explicit range update instead of append_row to prevent column shifting.
+        # append_row can misalign when the sheet grid has extra empty columns.
+        next_row = len(ws_log.get_all_values()) + 1
+        cell_range = f"A{next_row}:AN{next_row}"
+        ws_log.update(range_name=cell_range, values=[row])
         return True
     except Exception as e:
         logger.error(f"Error logging to sheet: {e}")
@@ -1462,7 +1463,7 @@ def aprobar_rendicion(row_idx, admin_user):
         row = ws.row_values(row_idx)
         estado_actual = str(row[28]).strip() if len(row) > 28 else ""
         if estado_actual != "PENDIENTE REVISIÓN":
-            revisado_por = str(row[32]).strip() if len(row) > 32 else "desconocido"
+            revisado_por = str(row[34]).strip() if len(row) > 34 else "desconocido"
             return False, f"Esta rendición ya fue procesada (estado: {estado_actual}, por: {revisado_por})"
 
         # Recalculate estado using Puchito rule
@@ -1479,10 +1480,12 @@ def aprobar_rendicion(row_idx, admin_user):
 
         fecha_rev = datetime.now().isoformat()
 
+        # Column letters reconciled with production layout:
+        # AC=Estado Saldos, AI=Revisado_Por, AN=Fecha_Revision
         ws.batch_update([
             {"range": f"AC{row_idx}", "values": [[nuevo_estado]]},
-            {"range": f"AG{row_idx}", "values": [[admin_user]]},
-            {"range": f"AH{row_idx}", "values": [[fecha_rev]]},
+            {"range": f"AI{row_idx}", "values": [[admin_user]]},
+            {"range": f"AN{row_idx}", "values": [[fecha_rev]]},
         ])
 
         logger.info(f"Rendición {row_idx} aprobada -> {nuevo_estado} por {admin_user}")
@@ -1514,7 +1517,7 @@ def rechazar_rendicion(row_idx, admin_user, motivo):
         row = ws_log.row_values(row_idx)
         estado_actual = str(row[28]).strip() if len(row) > 28 else ""
         if estado_actual != "PENDIENTE REVISIÓN":
-            revisado_por = str(row[32]).strip() if len(row) > 32 else "desconocido"
+            revisado_por = str(row[34]).strip() if len(row) > 34 else "desconocido"
             return False, f"Esta rendición ya fue procesada (estado: {estado_actual}, por: {revisado_por})"
 
         # Extract data needed to revert CONTROL_SALDOS
@@ -1534,11 +1537,13 @@ def rechazar_rendicion(row_idx, admin_user, motivo):
         # Step 2: Update RENDICIONES_LOG (only if revert succeeded)
         fecha_rev = datetime.now().isoformat()
         try:
+            # Column letters reconciled with production layout:
+            # AC=Estado Saldos, AH=Motivo_Rechazo, AI=Revisado_Por, AN=Fecha_Revision
             ws_log.batch_update([
                 {"range": f"AC{row_idx}", "values": [["RECHAZADO"]]},
-                {"range": f"AF{row_idx}", "values": [[motivo]]},
-                {"range": f"AG{row_idx}", "values": [[admin_user]]},
-                {"range": f"AH{row_idx}", "values": [[fecha_rev]]},
+                {"range": f"AH{row_idx}", "values": [[motivo]]},
+                {"range": f"AI{row_idx}", "values": [[admin_user]]},
+                {"range": f"AN{row_idx}", "values": [[fecha_rev]]},
             ])
         except Exception as e:
             # Revert already happened — log the inconsistency
