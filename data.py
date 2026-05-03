@@ -1711,7 +1711,13 @@ def _leer_y_filtrar_rendiciones(fecha_desde=None, fecha_hasta=None,
 
 def validar_rendiciones_pre_export(fecha_desde=None, fecha_hasta=None,
                                     modo_parcial=False, fecha_inicio_dux=""):
-    """Pre-export validation. Returns list of errors, string message, or None on read failure."""
+    """Pre-export validation.
+
+    Returns:
+        None: on read failure.
+        str: early-exit message (no data, missing config).
+        (list, list): (errores, warnings) — errores block export, warnings don't.
+    """
     if not fecha_inicio_dux:
         return "Configurar FECHA_INICIO_EXPORT_DUX en CONFIG_EMPRESA antes del primer export."
 

@@ -1002,18 +1002,34 @@ with st.expander("⚙️ Administración (Exportación Dux)", expanded=False):
                     st.error("No se pudo leer RENDICIONES_LOG")
                 elif isinstance(validation_result, str):
                     st.warning(validation_result)
-                elif len(validation_result) == 0:
-                    st.success("Validación OK — sin errores. Podés exportar.")
-                    st.session_state["dux_validation_passed"] = True
-                else:
-                    st.session_state["dux_validation_passed"] = False
-                    st.error(f"Export DUX abortado: {len(validation_result)} errores encontrados")
-                    for idx, err in enumerate(validation_result, 1):
-                        with st.expander(f"ERROR {idx} — {err['tipo']}", expanded=True):
-                            st.write(err["mensaje"])
-                            for f in err.get("filas_afectadas", [])[:10]:
-                                st.code(f)
-                            st.caption(f"Acción: {err.get('accion', '')}")
+                elif isinstance(validation_result, tuple):
+                    errores, warn_list = validation_result
+                    if errores:
+                        st.session_state["dux_validation_passed"] = False
+                        st.error(f"Export DUX abortado: {len(errores)} errores bloqueantes")
+                        for idx, err in enumerate(errores, 1):
+                            with st.expander(f"ERROR {idx} — {err['tipo']}", expanded=True):
+                                st.write(err["mensaje"])
+                                for f in err.get("filas_afectadas", [])[:10]:
+                                    st.code(f)
+                                st.caption(f"Acción: {err.get('accion', '')}")
+                        if warn_list:
+                            st.info(f"Además hay {len(warn_list)} advertencias (ver abajo)")
+                            for w in warn_list:
+                                st.caption(f"⚠️ {w['tipo']}: {w['mensaje']}")
+                    elif warn_list:
+                        st.session_state["dux_validation_passed"] = True
+                        st.success("Validación OK — sin errores bloqueantes. Podés exportar.")
+                        st.warning(f"{len(warn_list)} advertencias (no bloqueantes):")
+                        for w in warn_list:
+                            with st.expander(f"⚠️ {w['tipo']}"):
+                                st.write(w["mensaje"])
+                                for f in w.get("filas_afectadas", [])[:10]:
+                                    st.code(f)
+                                st.caption(f"Acción: {w.get('accion', '')}")
+                    else:
+                        st.success("Validación OK — sin errores. Podés exportar.")
+                        st.session_state["dux_validation_passed"] = True
 
         # Export button — only enabled after validation passes
         export_enabled = st.session_state.get("dux_validation_passed", False)

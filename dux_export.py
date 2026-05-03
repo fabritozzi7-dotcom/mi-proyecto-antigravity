@@ -170,10 +170,15 @@ def resolver_jurisdiccion_dux(jurisdiccion_raw):
 
     DUX v4 only accepts "CABA" and "BS AS" for iibb provincia columns.
     Other values pass through as-is (non-blocking) for manual review.
+    Treats "0", "0.0", "None", "nan" as absence (Google Sheets stores
+    empty numeric cells as "0").
     """
     if not jurisdiccion_raw:
         return ""
-    norm = str(jurisdiccion_raw).strip().upper()
+    s = str(jurisdiccion_raw).strip()
+    if s in ("", "0", "0.0", "None", "nan"):
+        return ""
+    norm = s.upper()
     return JURISDICCION_A_DUX.get(norm, norm)
 
 
@@ -532,10 +537,13 @@ def validar_rendiciones_para_export(rendiciones, codigo_concepto_fn=None,
     """Validates renditions before DUX export.
 
     Returns:
-        list[dict]: errors. Each dict has keys: tipo, mensaje, filas_afectadas.
-        Empty list means validation passed.
+        (list[dict], list[dict]): (errores, warnings).
+        errores are blocking — abort export.
+        warnings are informational — show but don't block.
+        Each dict has keys: tipo, mensaje, filas_afectadas, accion.
     """
     errors = []
+    warnings = []
 
     # Group errors by type
     sin_cuit = []
@@ -628,7 +636,7 @@ def validar_rendiciones_para_export(rendiciones, codigo_concepto_fn=None,
             "accion": "Editá la rendición y completá el número de carpeta",
         })
 
-    # WARNING (not error): jurisdicciones IIBB que DUX puede no aceptar
+    # WARNING (not blocking): jurisdicciones IIBB que DUX puede no aceptar
     juris_no_estandar = []
     for i, rend in enumerate(rendiciones):
         row_ref = rend.get("id_operacion", f"fila {i+1}")
@@ -637,14 +645,14 @@ def validar_rendiciones_para_export(rendiciones, codigo_concepto_fn=None,
             if not juris_raw:
                 continue
             juris_dux = resolver_jurisdiccion_dux(juris_raw)
-            if juris_dux not in JURISDICCIONES_DUX_VALIDAS:
+            if juris_dux and juris_dux not in JURISDICCIONES_DUX_VALIDAS:
                 juris_no_estandar.append(
                     f"row {row_ref}: {juris_key}='{juris_raw}' -> '{juris_dux}'"
                 )
 
     if juris_no_estandar:
-        errors.append({
-            "tipo": "Jurisdicción IIBB no estándar para DUX (WARNING)",
+        warnings.append({
+            "tipo": "Jurisdicción IIBB no estándar para DUX",
             "mensaje": (
                 f"{len(juris_no_estandar)} percepciones con jurisdicción que DUX puede no aceptar. "
                 f"DUX v4 solo acepta 'CABA' y 'BS AS'."
@@ -653,7 +661,7 @@ def validar_rendiciones_para_export(rendiciones, codigo_concepto_fn=None,
             "accion": "Verificá con el equipo de DUX si la jurisdicción es válida o ajustá manualmente.",
         })
 
-    return errors
+    return errors, warnings
 
 
 # ==========================================
@@ -907,12 +915,12 @@ if __name__ == "__main__":
     check("IIBB slot 3 empty", enc3[24] == "" and enc3[25] == "",
           f"Y={enc3[24]} Z={enc3[25]}")
 
-    # Validation should warn about CORDOBA
-    errs3 = validar_rendiciones_para_export(t3, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
-    juris_warnings = [e for e in errs3 if "urisdicci" in e["tipo"]]
+    # Validation should warn (not error) about CORDOBA
+    errs3, warns3 = validar_rendiciones_para_export(t3, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
+    check("No blocking errors", len(errs3) == 0, f"errors={len(errs3)}")
     check("Validation warns about CORDOBA",
-          any("CORDOBA" in str(e.get("filas_afectadas", "")) for e in juris_warnings),
-          f"Warnings: {[e['tipo'] for e in juris_warnings]}")
+          any("CORDOBA" in str(w.get("filas_afectadas", "")) for w in warns3),
+          f"Warnings: {[w['tipo'] for w in warns3]}")
 
     # ── Test 4: PROPIA Easy/Cencosud (2 IIBB + Municipal) ───────────
     print("\n=== Test 4: PROPIA Easy (2 IIBB + Municipal CORDOBA) ===")
@@ -973,7 +981,70 @@ if __name__ == "__main__":
           diff < 1.0,
           f"suma={suma:.2f} ticket={total_ticket} diff={diff:.2f}")
 
-    # ── Summary ────────────��─────────────────────────────────────────
+    # ── Test 6: "0" jurisdictions don't trigger warnings ───────────
+    print("\n=== Test 6: '0' jurisdictions = no warning ===")
+    t6 = [{
+        "id_operacion": "T6", "fecha": "2026-05-01",
+        "usuario": "DAVID REQUELME", "oficina": "BUENOS AIRES",
+        "numero_carpeta": "IMP-006", "tipo_operacion": "Importacion",
+        "cliente": "Cliente X", "concepto": "Flete terrestre",
+        "monto_concepto": 50000, "factura_tipo": "B", "codigo_afip": "006",
+        "sucursal": "00010", "numero_factura": "00045678",
+        "n_comprobante": "0001000045678", "proveedor_validado": "Si",
+        "cuit_proveedor": "30712345678", "cuit_cliente": "",
+        "neto_gravado": 0, "no_gravado": 50000.0,
+        "iva_21": 0, "iva_105": 0, "iva_27": 0,
+        "perc_iva": 0, "perc_ganancias": 0,
+        "perc_iibb": 0, "jurisdiccion": "",
+        "perc_iibb_2": 0, "jurisdiccion_iibb_2": "0",
+        "perc_municipal": 0, "jurisdiccion_municipal": "0",
+        "monto_total_ticket": 50000.0, "monto_a_imputar": 50000.0,
+        "ticket_url": "", "estado": "CERRADO",
+        "clave_maestra": "", "observaciones": "",
+    }]
+    errs6, warns6 = validar_rendiciones_para_export(t6, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
+    check("No errors", len(errs6) == 0, f"errors={len(errs6)}")
+    check("No warnings ('0' filtered)", len(warns6) == 0, f"warnings={len(warns6)}")
+
+    # ── Test 7: real invalid jurisdiction = warning not error ────────
+    print("\n=== Test 7: CORDOBA jurisdiction = warning only ===")
+    t7 = [{
+        **t6[0],
+        "id_operacion": "T7",
+        "perc_iibb": 1000, "jurisdiccion": "CORDOBA",
+        "jurisdiccion_iibb_2": "", "jurisdiccion_municipal": "",
+    }]
+    errs7, warns7 = validar_rendiciones_para_export(t7, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
+    check("No blocking errors", len(errs7) == 0, f"errors={len(errs7)}")
+    check("1 warning for CORDOBA", len(warns7) == 1, f"warnings={len(warns7)}")
+
+    # ── Test 8: blocking error (unmapped concept) ────────────────────
+    print("\n=== Test 8: unmapped concept = blocking error ===")
+    t8 = [{
+        **t6[0],
+        "id_operacion": "T8",
+        "concepto": "CONCEPTO_NO_MAPEADO",
+        "jurisdiccion_iibb_2": "", "jurisdiccion_municipal": "",
+    }]
+    errs8, warns8 = validar_rendiciones_para_export(t8, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
+    check("1 blocking error", len(errs8) == 1, f"errors={len(errs8)}")
+    check("Error is about concepto", "concepto" in errs8[0]["tipo"].lower() if errs8 else False,
+          errs8[0]["tipo"] if errs8 else "")
+
+    # ── Test 9: error + warning combo ────────────────────────────────
+    print("\n=== Test 9: error + warning combo ===")
+    t9 = [{
+        **t6[0],
+        "id_operacion": "T9",
+        "concepto": "CONCEPTO_NO_MAPEADO",
+        "perc_iibb": 1000, "jurisdiccion": "CORDOBA",
+        "jurisdiccion_iibb_2": "", "jurisdiccion_municipal": "",
+    }]
+    errs9, warns9 = validar_rendiciones_para_export(t9, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
+    check("1 blocking error", len(errs9) == 1, f"errors={len(errs9)}")
+    check("1 warning", len(warns9) == 1, f"warnings={len(warns9)}")
+
+    # ── Summary ──────────────────────────────────────────────────────
     print(f"\n{'='*50}")
     print(f"  {counts['passed']} PASSED, {counts['failed']} FAILED")
     if counts["failed"] == 0:
