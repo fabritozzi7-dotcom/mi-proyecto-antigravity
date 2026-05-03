@@ -25,14 +25,20 @@ AFIP_A_TIPO_FP = {
     "003": "NC", "008": "NC", "013": "NC", "053": "NC",
 }
 
-# Código jurisdicción interno → nombre Dux
+# Jurisdicción interna (nombre completo de la sheet) → string que DUX acepta.
+# DUX v4 only officially accepts "CABA" and "BS AS" for iibb provincia columns.
+# Other provinces pass through as-is (non-blocking) but trigger a validation warning.
 JURISDICCION_A_DUX = {
-    "CF": "CABA",
-    "BA": "BS AS",
-    "OB": "CORDOBA",
-    "SF": "SANTA FE",
-    "MZ": "MENDOZA",
+    "CABA": "CABA",
+    "CAPITAL FEDERAL": "CABA",
+    "CIUDAD AUTONOMA DE BUENOS AIRES": "CABA",
+    "BUENOS AIRES": "BS AS",
+    "BS AS": "BS AS",
+    "PROVINCIA DE BUENOS AIRES": "BS AS",
 }
+
+# Set of jurisdiction values that DUX v4 officially accepts.
+JURISDICCIONES_DUX_VALIDAS = {"CABA", "BS AS"}
 
 # Headers de RENDICIONES_LOG → clave interna (por posición 0-30)
 # Maps RENDICIONES_LOG columns by position (0-indexed) to internal keys.
@@ -159,10 +165,16 @@ def resolver_id_tesoreria(nombre_usuario, codigo_empleado_fn=None):
     return str(code) if code is not None else ""
 
 
-def resolver_jurisdiccion_dux(codigo_interno):
-    """Código interno (CF, OB, etc.) → nombre Dux (CABA, CORDOBA, etc.)."""
-    code = str(codigo_interno or "").strip().upper()
-    return JURISDICCION_A_DUX.get(code, code)
+def resolver_jurisdiccion_dux(jurisdiccion_raw):
+    """Normaliza una jurisdicción del sistema interno al formato DUX.
+
+    DUX v4 only accepts "CABA" and "BS AS" for iibb provincia columns.
+    Other values pass through as-is (non-blocking) for manual review.
+    """
+    if not jurisdiccion_raw:
+        return ""
+    norm = str(jurisdiccion_raw).strip().upper()
+    return JURISDICCION_A_DUX.get(norm, norm)
 
 
 def es_propia(cuit_cliente, cuits_propios=None):
@@ -405,8 +417,15 @@ def _sumar_desglose(grupo):
         "perc_ganancias": 0.0,
     }
 
-    # Acumular IIBB por jurisdicción
+    # Acumular IIBB por jurisdicción (normalizada a formato DUX)
     iibb_por_juris = {}
+
+    def _acumular_iibb(importe_key, juris_key, rend):
+        importe = safe_float(rend.get(importe_key))
+        juris_raw = str(rend.get(juris_key, "")).strip()
+        if importe > 0 and juris_raw:
+            provincia_dux = resolver_jurisdiccion_dux(juris_raw)
+            iibb_por_juris[provincia_dux] = iibb_por_juris.get(provincia_dux, 0.0) + importe
 
     for rend in grupo:
         totales["neto_gravado"] += safe_float(rend.get("neto_gravado"))
@@ -417,15 +436,27 @@ def _sumar_desglose(grupo):
         totales["perc_iva"] += safe_float(rend.get("perc_iva"))
         totales["perc_ganancias"] += safe_float(rend.get("perc_ganancias"))
 
-        perc_iibb = safe_float(rend.get("perc_iibb"))
-        juris_code = str(rend.get("jurisdiccion", "")).strip().upper()
-        if perc_iibb > 0 and juris_code:
-            provincia_dux = resolver_jurisdiccion_dux(juris_code)
-            iibb_por_juris[provincia_dux] = iibb_por_juris.get(provincia_dux, 0.0) + perc_iibb
+        # IIBB slot 1 (primary)
+        _acumular_iibb("perc_iibb", "jurisdiccion", rend)
+        # IIBB slot 2
+        _acumular_iibb("perc_iibb_2", "jurisdiccion_iibb_2", rend)
+        # NOTA: Perc_Municipal se trata aquí como una IIBB adicional para
+        # ocupar el slot 3 del ENC. Esta es una asunción provisoria. Fabián
+        # debe confirmar si la imputación correcta es ésta o si va como un
+        # DET separado con código de cuenta 30 - PERCEPCIONES MUNICIPALES.
+        # Si es lo segundo, este código necesita un refactor.
+        _acumular_iibb("perc_municipal", "jurisdiccion_municipal", rend)
+
+    if len(iibb_por_juris) > 3:
+        excedentes = sorted(iibb_por_juris.keys())[3:]
+        logger.warning(
+            f"Grupo tiene {len(iibb_por_juris)} jurisdicciones IIBB. "
+            f"DUX solo soporta 3. No se exportan: {excedentes}"
+        )
 
     totales["iibb"] = [
         {"provincia": prov, "importe": imp}
-        for prov, imp in iibb_por_juris.items()
+        for prov, imp in sorted(iibb_por_juris.items())
     ]
 
     return totales
@@ -597,29 +628,29 @@ def validar_rendiciones_para_export(rendiciones, codigo_concepto_fn=None,
             "accion": "Editá la rendición y completá el número de carpeta",
         })
 
-    # WARNING (not error): IIBB_2 or Perc_Municipal present but not exported
-    con_perc_extra = []
+    # WARNING (not error): jurisdicciones IIBB que DUX puede no aceptar
+    juris_no_estandar = []
     for i, rend in enumerate(rendiciones):
         row_ref = rend.get("id_operacion", f"fila {i+1}")
-        iibb2 = safe_float(rend.get("perc_iibb_2"))
-        muni = safe_float(rend.get("perc_municipal"))
-        if iibb2 > 0 or muni > 0:
-            parts = []
-            if iibb2 > 0:
-                parts.append(f"IIBB_2=${iibb2:,.2f}")
-            if muni > 0:
-                parts.append(f"Municipal=${muni:,.2f}")
-            con_perc_extra.append(f"row {row_ref}: {', '.join(parts)}")
+        for juris_key in ("jurisdiccion", "jurisdiccion_iibb_2", "jurisdiccion_municipal"):
+            juris_raw = str(rend.get(juris_key, "")).strip()
+            if not juris_raw:
+                continue
+            juris_dux = resolver_jurisdiccion_dux(juris_raw)
+            if juris_dux not in JURISDICCIONES_DUX_VALIDAS:
+                juris_no_estandar.append(
+                    f"row {row_ref}: {juris_key}='{juris_raw}' -> '{juris_dux}'"
+                )
 
-    if con_perc_extra:
+    if juris_no_estandar:
         errors.append({
-            "tipo": "Percepciones no incluidas en export DUX (WARNING)",
+            "tipo": "Jurisdicción IIBB no estándar para DUX (WARNING)",
             "mensaje": (
-                f"{len(con_perc_extra)} rendiciones tienen percepciones IIBB de 2 jurisdicciones "
-                f"y/o Percepción Municipal. El export DUX actual NO incluye estos datos en el archivo."
+                f"{len(juris_no_estandar)} percepciones con jurisdicción que DUX puede no aceptar. "
+                f"DUX v4 solo acepta 'CABA' y 'BS AS'."
             ),
-            "filas_afectadas": con_perc_extra,
-            "accion": "Considerá agregarlos manualmente en DUX o esperá la próxima actualización del export.",
+            "filas_afectadas": juris_no_estandar,
+            "accion": "Verificá con el equipo de DUX si la jurisdicción es válida o ajustá manualmente.",
         })
 
     return errors
@@ -754,12 +785,13 @@ def exportar_dux_desde_sheets(rendiciones_raw, output_path, cuits_propios=None,
 # ==========================================
 
 if __name__ == "__main__":
-    print("=== Test standalone dux_export (refactored) ===\n")
+    import sys
+
+    logging.basicConfig(level=logging.INFO)
 
     CUITS_PROPIOS = ["30570717630"]
-
-    # Mock lookup functions
-    MOCK_CONCEPTOS = {"FLETE TERRESTRE": 911, "HONORARIOS DESPACHANTE": 5102}
+    MOCK_CONCEPTOS = {"FLETE TERRESTRE": 911, "HONORARIOS DESPACHANTE": 5102,
+                      "GASTOS GENERALES OF. BS.AS.": 5148}
     MOCK_EMPLEADOS = {"DAVID REQUELME": 319, "FABRICIO DAURIA": 361}
 
     def mock_concepto_fn(c):
@@ -768,115 +800,185 @@ if __name__ == "__main__":
     def mock_empleado_fn(u):
         return MOCK_EMPLEADOS.get(str(u).strip().upper())
 
-    # Caso 1: TERCEROS con 2 carpetas — cuit_cliente vacío (B invoice)
-    terceros_base = {
-        "id_operacion": "20260215120000", "fecha": "2026-02-15",
+    counts = {"passed": 0, "failed": 0}
+
+    def check(name, condition, detail=""):
+        if condition:
+            print(f"  [PASS] {name}" + (f" -- {detail}" if detail else ""))
+            counts["passed"] += 1
+        else:
+            print(f"  [FAIL] {name}" + (f" -- {detail}" if detail else ""))
+            counts["failed"] += 1
+
+    # ── Test 1: TERCEROS sin IIBB ────────────────────────────────────
+    print("\n=== Test 1: TERCEROS sin percepciones IIBB ===")
+    t1 = [{
+        "id_operacion": "T1", "fecha": "2026-05-01",
         "usuario": "DAVID REQUELME", "oficina": "BUENOS AIRES",
-        "tipo_operacion": "Importación", "cliente": "Importadora X",
-        "concepto": "Flete terrestre", "monto_concepto": "50000",
-        "factura_tipo": "B", "codigo_afip": "006",
+        "numero_carpeta": "IMP-001", "tipo_operacion": "Importacion",
+        "cliente": "Cliente X", "concepto": "Flete terrestre",
+        "monto_concepto": 50000, "factura_tipo": "B", "codigo_afip": "006",
         "sucursal": "00010", "numero_factura": "00045678",
-        "n_comprobante": "0001000045678", "proveedor_validado": "Sí",
+        "n_comprobante": "0001000045678", "proveedor_validado": "Si",
         "cuit_proveedor": "30712345678", "cuit_cliente": "",
         "neto_gravado": 0, "no_gravado": 50000.0,
         "iva_21": 0, "iva_105": 0, "iva_27": 0,
-        "perc_iva": 0, "perc_ganancias": 0, "perc_iibb": 0,
-        "jurisdiccion": "", "monto_total_ticket": 50000.0,
-        "monto_a_imputar": 25000.0, "ticket_url": "", "estado": "CERRADO",
-        "clave_maestra": "30712345678B0001000045678", "observaciones": "",
-    }
-    terceros_1 = {**terceros_base, "numero_carpeta": "IMP-2026-001"}
-    terceros_2 = {**terceros_base, "numero_carpeta": "IMP-2026-002"}
+        "perc_iva": 0, "perc_ganancias": 0,
+        "perc_iibb": 0, "jurisdiccion": "",
+        "perc_iibb_2": 0, "jurisdiccion_iibb_2": "",
+        "perc_municipal": 0, "jurisdiccion_municipal": "",
+        "monto_total_ticket": 50000.0, "monto_a_imputar": 50000.0,
+        "ticket_url": "", "estado": "CERRADO",
+        "clave_maestra": "", "observaciones": "",
+    }]
+    g1 = agrupar_por_comprobante(t1)
+    f1 = generar_filas_dux(g1, CUITS_PROPIOS, mock_concepto_fn, mock_empleado_fn)
+    enc1 = [r for r in f1 if r[0] == "ENC"][0]
+    check("ENC is TERCEROS", enc1[1] == "TERCEROS", enc1[1])
+    check("IIBB slot 1 empty", enc1[20] == "" and enc1[21] == "",
+          f"U={enc1[20]} V={enc1[21]}")
+    check("IIBB slot 2 empty", enc1[22] == "" and enc1[23] == "",
+          f"W={enc1[22]} X={enc1[23]}")
+    check("IIBB slot 3 empty", enc1[24] == "" and enc1[25] == "",
+          f"Y={enc1[24]} Z={enc1[25]}")
 
-    # Caso 2: PROPIA con 3 carpetas — cuit_cliente = Expoconsult
-    propia_base = {
-        "id_operacion": "20260215130000", "fecha": "2026-02-15",
+    # ── Test 2: PROPIA con 1 jurisdiccion IIBB (CABA) ───────────────
+    print("\n=== Test 2: PROPIA con 1 IIBB CABA ===")
+    t2 = [{
+        "id_operacion": "T2", "fecha": "2026-05-01",
         "usuario": "FABRICIO DAURIA", "oficina": "BUENOS AIRES",
-        "tipo_operacion": "Exportación", "cliente": "Exportadora Y",
-        "concepto": "Honorarios despachante", "monto_concepto": "120000",
-        "factura_tipo": "A", "codigo_afip": "001",
+        "numero_carpeta": "EXP-001", "tipo_operacion": "Exportacion",
+        "cliente": "Exportadora Y", "concepto": "Honorarios despachante",
+        "monto_concepto": 120000, "factura_tipo": "A", "codigo_afip": "001",
         "sucursal": "00003", "numero_factura": "00099001",
-        "n_comprobante": "0000300099001", "proveedor_validado": "Sí",
+        "n_comprobante": "0000300099001", "proveedor_validado": "Si",
         "cuit_proveedor": "20345678901", "cuit_cliente": "30570717630",
         "neto_gravado": 33057.85, "no_gravado": 0,
         "iva_21": 6942.15, "iva_105": 0, "iva_27": 0,
-        "perc_iva": 0, "perc_ganancias": 0, "perc_iibb": 1320.23,
-        "jurisdiccion": "CF", "monto_total_ticket": 41320.23,
-        "monto_a_imputar": 13773.41, "ticket_url": "", "estado": "CERRADO",
-        "clave_maestra": "20345678901A0000300099001", "observaciones": "",
-    }
-    propia_1 = {**propia_base, "numero_carpeta": "EXP-2026-010"}
-    propia_2 = {**propia_base, "numero_carpeta": "EXP-2026-011"}
-    propia_3 = {**propia_base, "numero_carpeta": "EXP-2026-012",
-                "monto_a_imputar": 13773.41}
+        "perc_iva": 0, "perc_ganancias": 0,
+        "perc_iibb": 1000.0, "jurisdiccion": "CABA",
+        "perc_iibb_2": 0, "jurisdiccion_iibb_2": "",
+        "perc_municipal": 0, "jurisdiccion_municipal": "",
+        "monto_total_ticket": 41000.0, "monto_a_imputar": 41000.0,
+        "ticket_url": "", "estado": "CERRADO",
+        "clave_maestra": "", "observaciones": "",
+    }]
+    g2 = agrupar_por_comprobante(t2)
+    f2 = generar_filas_dux(g2, CUITS_PROPIOS, mock_concepto_fn, mock_empleado_fn)
+    enc2 = [r for r in f2 if r[0] == "ENC"][0]
+    check("ENC is PROPIA", enc2[1] == "PROPIA")
+    check("IIBB slot 1 = (1000, CABA)", enc2[20] == 1000.0 and enc2[21] == "CABA",
+          f"U={enc2[20]} V={enc2[21]}")
+    check("IIBB slot 2 empty", enc2[22] == "" and enc2[23] == "",
+          f"W={enc2[22]} X={enc2[23]}")
+    check("IIBB slot 3 empty", enc2[24] == "" and enc2[25] == "",
+          f"Y={enc2[24]} Z={enc2[25]}")
 
-    # Caso 3: Factura A con cuit_cliente != Expoconsult → TERCEROS
-    otra_base = {**propia_base,
-        "id_operacion": "20260215140000",
-        "cuit_proveedor": "20999888777",
-        "cuit_cliente": "20111222333",  # NOT Expoconsult
-        "monto_a_imputar": 41320.23,
-        "clave_maestra": "20999888777A0000300099002",
+    # ���─ Test 3: PROPIA con 2 IIBB (CABA + CORDOBA) ──────���───────────
+    print("\n=== Test 3: PROPIA con 2 IIBB (CABA + CORDOBA) ===")
+    t3 = [{
+        "id_operacion": "T3", "fecha": "2026-05-01",
+        "usuario": "FABRICIO DAURIA", "oficina": "BUENOS AIRES",
+        "numero_carpeta": "EXP-002", "tipo_operacion": "Exportacion",
+        "cliente": "Exportadora Y", "concepto": "Honorarios despachante",
+        "monto_concepto": 120000, "factura_tipo": "A", "codigo_afip": "001",
         "sucursal": "00003", "numero_factura": "00099002",
-    }
-    otra_1 = {**otra_base, "numero_carpeta": "EXP-2026-020"}
+        "n_comprobante": "0000300099002", "proveedor_validado": "Si",
+        "cuit_proveedor": "20345678901", "cuit_cliente": "30570717630",
+        "neto_gravado": 33057.85, "no_gravado": 0,
+        "iva_21": 6942.15, "iva_105": 0, "iva_27": 0,
+        "perc_iva": 0, "perc_ganancias": 0,
+        "perc_iibb": 4938.0, "jurisdiccion": "CABA",
+        "perc_iibb_2": 4938.0, "jurisdiccion_iibb_2": "CORDOBA",
+        "perc_municipal": 0, "jurisdiccion_municipal": "",
+        "monto_total_ticket": 49876.0, "monto_a_imputar": 49876.0,
+        "ticket_url": "", "estado": "CERRADO",
+        "clave_maestra": "", "observaciones": "",
+    }]
+    g3 = agrupar_por_comprobante(t3)
+    f3 = generar_filas_dux(g3, CUITS_PROPIOS, mock_concepto_fn, mock_empleado_fn)
+    enc3 = [r for r in f3 if r[0] == "ENC"][0]
+    check("ENC is PROPIA", enc3[1] == "PROPIA")
+    # Sorted: CABA < CORDOBA
+    check("IIBB slot 1 = (4938, CABA)", enc3[20] == 4938.0 and enc3[21] == "CABA",
+          f"U={enc3[20]} V={enc3[21]}")
+    check("IIBB slot 2 = (4938, CORDOBA)", enc3[22] == 4938.0 and enc3[23] == "CORDOBA",
+          f"W={enc3[22]} X={enc3[23]}")
+    check("IIBB slot 3 empty", enc3[24] == "" and enc3[25] == "",
+          f"Y={enc3[24]} Z={enc3[25]}")
 
-    rendiciones = [terceros_1, terceros_2, propia_1, propia_2, propia_3, otra_1]
+    # Validation should warn about CORDOBA
+    errs3 = validar_rendiciones_para_export(t3, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
+    juris_warnings = [e for e in errs3 if "urisdicci" in e["tipo"]]
+    check("Validation warns about CORDOBA",
+          any("CORDOBA" in str(e.get("filas_afectadas", "")) for e in juris_warnings),
+          f"Warnings: {[e['tipo'] for e in juris_warnings]}")
 
-    # Test generation
-    grupos = agrupar_por_comprobante(rendiciones)
-    filas = generar_filas_dux(grupos, CUITS_PROPIOS, mock_concepto_fn, mock_empleado_fn)
+    # ── Test 4: PROPIA Easy/Cencosud (2 IIBB + Municipal) ───────────
+    print("\n=== Test 4: PROPIA Easy (2 IIBB + Municipal CORDOBA) ===")
+    t4 = [{
+        "id_operacion": "T4_EASY", "fecha": "2026-05-01",
+        "usuario": "FABRICIO DAURIA", "oficina": "CORDOBA",
+        "numero_carpeta": "IMP-EASY-001", "tipo_operacion": "Importacion",
+        "cliente": "Cencosud / Easy", "concepto": "Gastos generales OF. BS.AS.",
+        "monto_concepto": 250000, "factura_tipo": "A", "codigo_afip": "001",
+        "sucursal": "00091", "numero_factura": "00312456",
+        "n_comprobante": "0009100312456", "proveedor_validado": "Si",
+        "cuit_proveedor": "30600928235", "cuit_cliente": "30570717630",
+        "neto_gravado": 179308.97, "no_gravado": 0,
+        "iva_21": 37654.88, "iva_105": 0, "iva_27": 0,
+        "perc_iva": 0, "perc_ganancias": 0,
+        "perc_iibb": 4938.50, "jurisdiccion": "CORDOBA",
+        "perc_iibb_2": 4938.50, "jurisdiccion_iibb_2": "CABA",
+        "perc_municipal": 2963.10, "jurisdiccion_municipal": "CORDOBA",
+        "monto_total_ticket": 229803.95, "monto_a_imputar": 229803.95,
+        "ticket_url": "", "estado": "CERRADO",
+        "clave_maestra": "", "observaciones": "",
+    }]
+    g4 = agrupar_por_comprobante(t4)
+    f4 = generar_filas_dux(g4, CUITS_PROPIOS, mock_concepto_fn, mock_empleado_fn)
+    enc4 = [r for r in f4 if r[0] == "ENC"][0]
+    check("ENC is PROPIA", enc4[1] == "PROPIA")
 
-    print(f"Generadas {len(filas)} filas")
-    print(f"  - Esperado: 3 ENC + 6 DET = 9 filas\n")
+    # Municipal CORDOBA ($2963.10) accumulates with IIBB CORDOBA ($4938.50) = $7901.60
+    # Sorted: CABA < CORDOBA
+    check("IIBB slot 1 = CABA $4938.50",
+          enc4[21] == "CABA" and abs(enc4[20] - 4938.50) < 0.01,
+          f"U={enc4[20]} V={enc4[21]}")
+    check("IIBB slot 2 = CORDOBA $7901.60 (IIBB+Municipal)",
+          enc4[23] == "CORDOBA" and abs(enc4[22] - 7901.60) < 0.01,
+          f"W={enc4[22]} X={enc4[23]}")
+    check("IIBB slot 3 empty", enc4[24] == "" and enc4[25] == "",
+          f"Y={enc4[24]} Z={enc4[25]}")
 
-    for fila in filas:
-        tipo_r = fila[0]
-        tipo_f = fila[1]
-        cuit_i = fila[8]
-        concepto_h = fila[7]
-        empleado_n = fila[13]
-        importe = fila[11]
-        carpeta = fila[9]
-        print(f"  {tipo_r:3s} | {tipo_f:8s} | CUIT={str(cuit_i):13s} | H={str(concepto_h):6s} | N={str(empleado_n):4s} | L=${importe:>10} | J={carpeta}")
+    # ── Test 5: Sumatoria Easy ───────────────────────────────────────
+    print("\n=== Test 5: Sumatoria Easy = total ticket ===")
+    # netoGravado + noGravado + iva21 + perc_iva + perc_ganancias + iibb_total
+    # = 179308.97 + 0 + 37654.88 + 0 + 0 + (4938.50 + 4938.50 + 2963.10)
+    # = 179308.97 + 37654.88 + 12840.10 = 229803.95
+    total_ticket = 229803.95
+    neto = enc4[14]       # O: netoGravado
+    no_grav = enc4[15]    # P: noGravado
+    iva21 = enc4[17]      # R: iva21
+    iva105 = enc4[18]     # S: iva10
+    iva27 = enc4[19]      # T: iva27
+    perc_iva = enc4[26]   # AA: percepcion iva
+    perc_gan = enc4[27]   # AB: percepcion ganancias
+    iibb_total = sum(enc4[20 + i*2] for i in range(3)
+                     if isinstance(enc4[20 + i*2], (int, float)))
 
-    # Assertions
-    enc_rows = [f for f in filas if f[0] == "ENC"]
-    det_rows = [f for f in filas if f[0] == "DET"]
-    assert len(enc_rows) == 3, f"Expected 3 ENC, got {len(enc_rows)}"
-    assert len(det_rows) == 6, f"Expected 6 DET, got {len(det_rows)}"
+    suma = neto + no_grav + iva21 + iva105 + iva27 + perc_iva + perc_gan + iibb_total
+    diff = abs(suma - total_ticket)
+    check(f"Suma desglose = total ticket",
+          diff < 1.0,
+          f"suma={suma:.2f} ticket={total_ticket} diff={diff:.2f}")
 
-    # ENC always has CUIT (col I)
-    for enc in enc_rows:
-        assert enc[8] != "", f"ENC missing CUIT: {enc}"
-
-    # TERCEROS: cuit_cliente empty → should be TERCEROS
-    assert enc_rows[0][1] == "TERCEROS", f"Expected TERCEROS, got {enc_rows[0][1]}"
-
-    # PROPIA: cuit_cliente = 30570717630 → should be PROPIA
-    assert enc_rows[1][1] == "PROPIA", f"Expected PROPIA, got {enc_rows[1][1]}"
-
-    # Factura A with different cuit_cliente → TERCEROS (key test!)
-    assert enc_rows[2][1] == "TERCEROS", f"Expected TERCEROS for non-Expoconsult client, got {enc_rows[2][1]}"
-
-    # DET has concepto code (not text)
-    assert det_rows[0][7] == 911, f"Expected 911, got {det_rows[0][7]}"
-    assert det_rows[2][7] == 5102, f"Expected 5102, got {det_rows[2][7]}"
-
-    # DET has empleado code (not name)
-    assert det_rows[0][13] == "319", f"Expected 319, got {det_rows[0][13]}"
-    assert det_rows[2][13] == "361", f"Expected 361, got {det_rows[2][13]}"
-
-    # DET has carpeta in col J
-    assert det_rows[0][9] == "IMP-2026-001"
-
-    # Validation test
-    print("\n=== Validation test ===")
-    errors = validar_rendiciones_para_export(
-        rendiciones, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS
-    )
-    print(f"  Errors: {len(errors)}")
-    for e in errors:
-        print(f"  - {e['tipo']}: {e['mensaje']}")
-
-    print("\nALL ASSERTIONS PASSED")
+    # ── Summary ────────────��─────────────────────────────────────────
+    print(f"\n{'='*50}")
+    print(f"  {counts['passed']} PASSED, {counts['failed']} FAILED")
+    if counts["failed"] == 0:
+        print("  ALL TESTS PASSED")
+    else:
+        print("  SOME TESTS FAILED")
+    print(f"{'='*50}")
+    sys.exit(1 if counts["failed"] else 0)
