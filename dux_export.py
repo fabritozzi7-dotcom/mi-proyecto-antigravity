@@ -361,7 +361,7 @@ def _construir_det(rend, tipo_factura_dux, codigo_concepto_fn=None, codigo_emple
     Args:
         rend: dict with internal keys.
         tipo_factura_dux: "PROPIA" or "TERCEROS" (from group-level decision).
-        codigo_concepto_fn: callable(concepto) -> int|None.
+        codigo_concepto_fn: callable(concepto, oficina) -> int|None.
         codigo_empleado_fn: callable(usuario) -> int|None.
     """
     fecha_raw = str(rend.get("fecha", "")).strip()
@@ -383,13 +383,14 @@ def _construir_det(rend, tipo_factura_dux, codigo_concepto_fn=None, codigo_emple
 
     importe = safe_float(rend.get("monto_a_imputar"))
     concepto_interno = str(rend.get("concepto", "")).strip()
+    oficina = str(rend.get("oficina", "")).strip()
     carpeta = str(rend.get("numero_carpeta", "")).strip()
     usuario = str(rend.get("usuario", "")).strip()
 
-    # DUX code lookups
+    # DUX code lookups (oficina-aware: misma concepto puede tener distinta cuenta por oficina)
     codigo_concepto = ""
     if codigo_concepto_fn:
-        code = codigo_concepto_fn(concepto_interno)
+        code = codigo_concepto_fn(concepto_interno, oficina)
         if code is not None:
             codigo_concepto = code  # int
 
@@ -493,7 +494,7 @@ def generar_filas_dux(grupos, cuits_propios=None, codigo_concepto_fn=None,
         grupos: OrderedDict de {clave: [rendiciones]}, salida de
                 agrupar_por_comprobante.
         cuits_propios: list of Expoconsult CUITs for PROPIA detection.
-        codigo_concepto_fn: callable(concepto) -> int|None.
+        codigo_concepto_fn: callable(concepto, oficina) -> int|None.
         codigo_empleado_fn: callable(usuario) -> int|None.
 
     Returns:
@@ -564,7 +565,7 @@ def validar_rendiciones_para_export(rendiciones, codigo_concepto_fn=None,
 
     # Group errors by type
     sin_cuit = []
-    sin_concepto_dux = {}  # concepto -> [row indices/ids]
+    sin_concepto_dux = {}  # (concepto, oficina) -> [row indices/ids]
     sin_empleado_dux = {}  # usuario -> [row indices/ids]
     propia_sin_desglose = []
     sin_carpeta = []
@@ -577,12 +578,13 @@ def validar_rendiciones_para_export(rendiciones, codigo_concepto_fn=None,
         if not cuit or len(cuit) != 11 or not cuit.isdigit():
             sin_cuit.append(f"row {row_ref}: CUIT='{cuit}'")
 
-        # 2. Concepto → codigo DUX
+        # 2. (Concepto, Oficina) → codigo DUX
         concepto = str(rend.get("concepto", "")).strip()
+        oficina = str(rend.get("oficina", "")).strip()
         if concepto and codigo_concepto_fn:
-            code = codigo_concepto_fn(concepto)
+            code = codigo_concepto_fn(concepto, oficina)
             if code is None:
-                sin_concepto_dux.setdefault(concepto, []).append(row_ref)
+                sin_concepto_dux.setdefault((concepto, oficina), []).append(row_ref)
 
         # 3. Usuario → idEmpleado DUX
         usuario = str(rend.get("usuario", "")).strip()
@@ -616,13 +618,21 @@ def validar_rendiciones_para_export(rendiciones, codigo_concepto_fn=None,
     if sin_concepto_dux:
         total = sum(len(v) for v in sin_concepto_dux.values())
         detalles = []
-        for conc, rows in sin_concepto_dux.items():
-            detalles.append(f'  "{conc}" (rows: {", ".join(str(r) for r in rows[:5])})')
+        for (conc, ofi), rows in sin_concepto_dux.items():
+            ofi_str = ofi if ofi else "(sin oficina)"
+            detalles.append(
+                f'  "{conc}" oficina="{ofi_str}" '
+                f'(rows: {", ".join(str(r) for r in rows[:5])})'
+            )
         errors.append({
-            "tipo": "Concepto sin código DUX",
-            "mensaje": f"{total} rendiciones con concepto sin mapear",
+            "tipo": "Concepto sin código DUX para esa oficina",
+            "mensaje": f"{total} rendiciones con (concepto, oficina) sin mapear",
             "filas_afectadas": detalles,
-            "accion": "Completá la columna 'concepto_interno' en MAESTRO_CONCEPTOS_DUX",
+            "accion": (
+                "Cargá la fila correspondiente en MAESTRO_CONCEPTOS_DUX "
+                "(concepto_interno + oficina + codigo_dux). "
+                "Si la cuenta es la misma para todas las oficinas, usá oficina='Todas'."
+            ),
         })
 
     if sin_empleado_dux:
@@ -800,7 +810,7 @@ def exportar_dux_desde_sheets(rendiciones_raw, output_path, cuits_propios=None,
         rendiciones_raw: lista de dicts con claves internas (HEADER_MAP).
         output_path: ruta del .xlsx de salida.
         cuits_propios: list of Expoconsult CUITs.
-        codigo_concepto_fn: callable(concepto) -> int|None.
+        codigo_concepto_fn: callable(concepto, oficina) -> int|None.
         codigo_empleado_fn: callable(usuario) -> int|None.
 
     Returns:
@@ -826,7 +836,8 @@ if __name__ == "__main__":
                       "GASTOS GENERALES OF. BS.AS.": 5148}
     MOCK_EMPLEADOS = {"DAVID REQUELME": 319, "FABRICIO DAURIA": 361}
 
-    def mock_concepto_fn(c):
+    def mock_concepto_fn(c, oficina=None):
+        # Mock simple: ignora oficina (los tests existentes asumen 1 cuenta por concepto)
         return MOCK_CONCEPTOS.get(str(c).strip().upper())
 
     def mock_empleado_fn(u):
@@ -1077,6 +1088,58 @@ if __name__ == "__main__":
     errs9, warns9 = validar_rendiciones_para_export(t9, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
     check("1 blocking error", len(errs9) == 1, f"errors={len(errs9)}")
     check("1 warning", len(warns9) == 1, f"warnings={len(warns9)}")
+
+    # ── Test 10: lookup oficina-aware (concepto x oficina -> cuenta) ─
+    print("\n=== Test 10: oficina-aware concept mapping ===")
+    MOCK_OFICINA = {
+        ("MOVILIDAD DEPOSITO FISCAL", "CORDOBA"): 5188,
+        ("MOVILIDAD DEPOSITO FISCAL", "BUENOS AIRES"): 5150,
+        ("HONORARIOS DESPACHANTE", "TODAS"): 5102,
+    }
+
+    def mock_oficina_fn(c, oficina=None):
+        conc = str(c).strip().upper()
+        of = str(oficina or "").strip().upper()
+        code = MOCK_OFICINA.get((conc, of))
+        if code is None:
+            code = MOCK_OFICINA.get((conc, "TODAS"))
+        return code
+
+    base_t10 = {**t6[0], "cuit_proveedor": "30712345678",
+                "concepto": "MOVILIDAD DEPOSITO FISCAL"}
+
+    t10a = [{**base_t10, "id_operacion": "T10A",
+             "oficina": "CORDOBA", "numero_factura": "00010001"}]
+    t10b = [{**base_t10, "id_operacion": "T10B",
+             "oficina": "BUENOS AIRES", "numero_factura": "00010002"}]
+    t10c = [{**base_t10, "id_operacion": "T10C",
+             "concepto": "HONORARIOS DESPACHANTE",
+             "oficina": "MENDOZA", "numero_factura": "00010003"}]
+
+    f10a = generar_filas_dux(agrupar_por_comprobante(t10a), CUITS_PROPIOS,
+                             mock_oficina_fn, mock_empleado_fn)
+    det10a = [r for r in f10a if r[0] == "DET"][0]
+    check("CORDOBA -> 5188", det10a[7] == 5188, f"got {det10a[7]}")
+
+    f10b = generar_filas_dux(agrupar_por_comprobante(t10b), CUITS_PROPIOS,
+                             mock_oficina_fn, mock_empleado_fn)
+    det10b = [r for r in f10b if r[0] == "DET"][0]
+    check("BUENOS AIRES -> 5150", det10b[7] == 5150, f"got {det10b[7]}")
+
+    f10c = generar_filas_dux(agrupar_por_comprobante(t10c), CUITS_PROPIOS,
+                             mock_oficina_fn, mock_empleado_fn)
+    det10c = [r for r in f10c if r[0] == "DET"][0]
+    check("MENDOZA -> fallback TODAS = 5102", det10c[7] == 5102,
+          f"got {det10c[7]}")
+
+    # Validacion debe reportar (concepto, oficina) sin mapeo cuando falta
+    t10_missing = [{**base_t10, "id_operacion": "T10D",
+                    "oficina": "SAN LUIS", "numero_factura": "00010004"}]
+    errs10, _ = validar_rendiciones_para_export(t10_missing, mock_oficina_fn,
+                                                mock_empleado_fn, CUITS_PROPIOS)
+    check("Validation reports (concepto, oficina) missing",
+          len(errs10) == 1 and "SAN LUIS" in str(errs10[0].get("filas_afectadas", "")),
+          f"errs={errs10}")
 
     # ── Summary ──────────────────────────────────────────────────────
     print(f"\n{'='*50}")

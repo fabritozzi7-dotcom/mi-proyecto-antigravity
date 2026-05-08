@@ -133,68 +133,6 @@ load_providers_from_file()
 # 1b. DUX MASTER DATA (SEEDS)
 # ==========================================
 
-MAESTRO_CONCEPTOS_DUX_SEED = [
-    [806, "INGRESOS OPERATIVOS"],
-    [870, "ANTICIPO GANANCIA MINIMA PRESUNTA"],
-    [911, "GASTON FLETES"],
-    [1100, "INGRESOS BRUTOS A PAGAR"],
-    [5020, "ANTICIPO DE CLIENTE"],
-    [5028, "COMPRA DE RODADO"],
-    [5066, "FORMULIARIO EXPORT.BS.AS."],
-    [5067, "FORMULARIO IMPORT.BS.AS."],
-    [5087, "SEGUNDO MOVIMIENTO"],
-    [5102, "HONOR.PROFES.CORDOBA"],
-    [5103, "TELEFONOS OFIC.CORDOBA"],
-    [5107, "AGUA, LUZ, Y GAS"],
-    [5109, "SEGUROS OFIC.CORDOBA"],
-    [5111, "FORMULARIOS IMPORT.OF.CORDOBA"],
-    [5115, "TASA COMERCIO E INDUSTRIA"],
-    [5116, "CONSORCIO OF.CORDOBA"],
-    [5117, "IMPUESTOS OFICINA CBA."],
-    [5121, "IMPUESTOS A LAS GANANCIAS"],
-    [5124, "DIFERENCIA CAJA BS.AS."],
-    [5127, "COMPRA RODADOS"],
-    [5128, "MANTENIMIENTO RODADOS"],
-    [5129, "SUELDOS A PAGAR"],
-    [5131, "APORTES Y CONTRIBUC.SOCIALES"],
-    [5132, "OTRAS DEUDAS SOCIALES"],
-    [5133, "MANTENIM.SIST.INFORMAT.CBA"],
-    [5134, "OSDE"],
-    [5136, "GASTOS JUDICIALES CORDOBA"],
-    [5137, "GASTOS REPRESENTACION CORDOBA"],
-    [5142, "TELEFONOS BUENOS AIRES"],
-    [5143, "PAPELERIA Y UTILES BS.AS"],
-    [5144, "FORMULARIOS EXPORTAC.BS.AS."],
-    [5145, "FORMULARIOS IMPORTAC BS.AS."],
-    [5146, "ALQUILER OFIC.BUENOS AIRES"],
-    [5147, "CORREO Y ENCOMIENDAS BS.AS"],
-    [5148, "GASTOS GENERALES OF. BS.AS."],
-    [5149, "MANT.SIST.INFORMATICOS.BS.AS."],
-    [5150, "MOVILIDAD ADMINISTR.BS.AS."],
-    [5151, "FOTOCOPIAS BUENOS AIRES"],
-    [5152, "SEGUROS OFICINA BAIRES"],
-    [5153, "GASTOS VIAJES OFIC BS.AS."],
-    [5154, "GASTOS BANCARIOS BAIRES"],
-    [5156, "MANTENIM BIENES USO BS.AS."],
-    [5183, "FORMULARIO IMPORT.CORDOBA"],
-    [5184, "FORMULARIO EXPORT.CORDOBA"],
-    [5188, "GASTOS VIAJES CORDOBA"],
-    [5202, "INTERESES FISCALES Y PREVISIO"],
-    [5203, "DIFERENCIAS CAJA CORDOBA"],
-    [5204, "DIFERENCIA CAJA BAIRES"],
-    [5205, "DIFERENCIAS DE CAMBIO"],
-    [5206, "OTRAS PERDIDAS"],
-    [5502, "RETENCION I.V.A."],
-    [5503, "RETENCION GANANCIAS"],
-    [5504, "ANTICIPO IMP. GANANCIAS"],
-    [5580, "IMPUESTOS NACIONALES A PAGAR"],
-    [5650, "I.V.A. COMPRAS"],
-    [5652, "IMPUESTO AL CHEQUE"],
-    [5708, "GANCHO ENTREGA"],
-    [5709, "SEGUNDO MANIPULEO"],
-    [5710, "SERVICIO A LAS CARGAS"],
-]
-
 CONFIG_EMPRESA_SEED = [
     ["CUIT_EXPOCONSULT", "30570717630"],
     ["FECHA_INICIO_EXPORT_DUX", "2026-05-01"],
@@ -202,8 +140,11 @@ CONFIG_EMPRESA_SEED = [
 
 
 def crear_hoja_maestro_conceptos_dux(sh):
-    """Creates and seeds MAESTRO_CONCEPTOS_DUX if it doesn't exist.
-    Idempotent: does nothing if sheet already exists.
+    """Creates MAESTRO_CONCEPTOS_DUX with headers if it doesn't exist.
+
+    Schema: concepto_interno | oficina | codigo_dux | nombre_dux
+    Sin filas seed: el admin carga el mapeo manualmente segun los
+    parametros del sistema (concepto + oficina -> cuenta DUX).
     """
     try:
         sh.worksheet("MAESTRO_CONCEPTOS_DUX")
@@ -211,13 +152,10 @@ def crear_hoja_maestro_conceptos_dux(sh):
     except gspread.exceptions.WorksheetNotFound:
         pass
 
-    ws = sh.add_worksheet(title="MAESTRO_CONCEPTOS_DUX", rows=100, cols=3)
-    ws.update(range_name="A1:C1", values=[["concepto_interno", "codigo_dux", "nombre_dux"]])
-    # Seed: concepto_interno left empty (manual mapping by admin)
-    seed_rows = [["", code, name] for code, name in MAESTRO_CONCEPTOS_DUX_SEED]
-    if seed_rows:
-        ws.update(range_name=f"A2:C{1 + len(seed_rows)}", values=seed_rows)
-    logger.info(f"MAESTRO_CONCEPTOS_DUX created and seeded with {len(seed_rows)} rows")
+    ws = sh.add_worksheet(title="MAESTRO_CONCEPTOS_DUX", rows=200, cols=4)
+    ws.update(range_name="A1:D1",
+              values=[["concepto_interno", "oficina", "codigo_dux", "nombre_dux"]])
+    logger.info("MAESTRO_CONCEPTOS_DUX created (headers only, sin seed)")
 
 
 def crear_hoja_config_empresa(sh):
@@ -325,7 +263,12 @@ def migrar_headers_rendiciones_log(sh):
 
 @st.cache_data(ttl=300)
 def _leer_maestro_conceptos_dux(_client, sheet_id):
-    """Reads MAESTRO_CONCEPTOS_DUX and returns {concepto_interno_upper: codigo_dux_int}."""
+    """Reads MAESTRO_CONCEPTOS_DUX and returns {(concepto_upper, oficina_upper): codigo_int}.
+
+    Schema esperado: concepto_interno | oficina | codigo_dux | nombre_dux
+    Si no existe la columna 'oficina' (planilla legacy de 3 cols), todas las
+    filas se cargan con oficina='TODAS'.
+    """
     try:
         sh = _client.open_by_key(sheet_id)
         ws = sh.worksheet("MAESTRO_CONCEPTOS_DUX")
@@ -338,17 +281,28 @@ def _leer_maestro_conceptos_dux(_client, sheet_id):
             idx_codigo = headers.index("codigo_dux")
         except ValueError:
             idx_interno, idx_codigo = 0, 1
+        try:
+            idx_oficina = headers.index("oficina")
+        except ValueError:
+            idx_oficina = -1  # legacy sheet, all rows -> "TODAS"
 
         result = {}
         for row in rows[1:]:
-            if len(row) > max(idx_interno, idx_codigo):
-                interno = str(row[idx_interno]).strip()
-                codigo_raw = str(row[idx_codigo]).strip()
-                if interno and codigo_raw:
-                    try:
-                        result[interno.upper()] = int(float(codigo_raw))
-                    except (ValueError, TypeError):
-                        pass
+            if len(row) <= max(idx_interno, idx_codigo):
+                continue
+            interno = str(row[idx_interno]).strip()
+            codigo_raw = str(row[idx_codigo]).strip()
+            if not interno or not codigo_raw:
+                continue
+            try:
+                codigo = int(float(codigo_raw))
+            except (ValueError, TypeError):
+                continue
+            if idx_oficina != -1 and len(row) > idx_oficina:
+                oficina = str(row[idx_oficina]).strip().upper() or "TODAS"
+            else:
+                oficina = "TODAS"
+            result[(interno.upper(), oficina)] = codigo
         return result
     except Exception as e:
         logger.error(f"Error reading MAESTRO_CONCEPTOS_DUX: {e}")
@@ -423,11 +377,12 @@ def _get_sheet_id():
     return sheet_id
 
 
-def get_codigo_concepto_dux(concepto_interno):
-    """Look up DUX concept code by internal concept name.
+def get_codigo_concepto_dux(concepto_interno, oficina=None):
+    """Look up DUX concept code by (concepto, oficina) with fallback to (concepto, 'TODAS').
 
     Returns:
-        int or None: DUX code, or None if not mapped.
+        int or None: DUX code, or None if neither (concepto, oficina) nor
+        (concepto, 'TODAS') exists in MAESTRO_CONCEPTOS_DUX.
     """
     client, _ = get_gsheets_client()
     if not client:
@@ -436,7 +391,12 @@ def get_codigo_concepto_dux(concepto_interno):
     if not sheet_id:
         return None
     mapping = _leer_maestro_conceptos_dux(client, sheet_id)
-    return mapping.get(str(concepto_interno).strip().upper())
+    conc_key = str(concepto_interno).strip().upper()
+    of_key = str(oficina or "").strip().upper() or "TODAS"
+    code = mapping.get((conc_key, of_key))
+    if code is not None:
+        return code
+    return mapping.get((conc_key, "TODAS"))
 
 
 def get_codigo_empleado_dux(usuario):
