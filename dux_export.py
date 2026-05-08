@@ -26,19 +26,30 @@ AFIP_A_TIPO_FP = {
 }
 
 # Jurisdicción interna (nombre completo de la sheet) → string que DUX acepta.
-# DUX v4 only officially accepts "CABA" and "BS AS" for iibb provincia columns.
-# Other provinces pass through as-is (non-blocking) but trigger a validation warning.
 JURISDICCION_A_DUX = {
     "CABA": "CABA",
     "CAPITAL FEDERAL": "CABA",
     "CIUDAD AUTONOMA DE BUENOS AIRES": "CABA",
     "BUENOS AIRES": "BS AS",
     "BS AS": "BS AS",
+    "BSAS": "BS AS",
     "PROVINCIA DE BUENOS AIRES": "BS AS",
+    "CORDOBA": "CORDOBA",
+    "CÓRDOBA": "CORDOBA",
+    "CBA": "CORDOBA",
+    "PROVINCIA DE CORDOBA": "CORDOBA",
+    "MENDOZA": "MENDOZA",
+    "MZA": "MENDOZA",
+    "PROVINCIA DE MENDOZA": "MENDOZA",
+    "SAN LUIS": "SAN LUIS",
+    "SL": "SAN LUIS",
+    "PROVINCIA DE SAN LUIS": "SAN LUIS",
 }
 
-# Set of jurisdiction values that DUX v4 officially accepts.
-JURISDICCIONES_DUX_VALIDAS = {"CABA", "BS AS"}
+# Jurisdicciones IIBB en las que Expoconsult está inscripto. Una percepción IIBB
+# de una jurisdicción fuera de esta lista se reclasifica a NO GRAVADO en el ENC
+# (criterio de Fabian, mail 2026-05-07).
+JURISDICCIONES_INSCRIPTAS = {"CABA", "BS AS", "CORDOBA", "MENDOZA", "SAN LUIS"}
 
 # Headers de RENDICIONES_LOG → clave interna (por posición 0-30)
 # Maps RENDICIONES_LOG columns by position (0-indexed) to internal keys.
@@ -168,8 +179,10 @@ def resolver_id_tesoreria(nombre_usuario, codigo_empleado_fn=None):
 def resolver_jurisdiccion_dux(jurisdiccion_raw):
     """Normaliza una jurisdicción del sistema interno al formato DUX.
 
-    DUX v4 only accepts "CABA" and "BS AS" for iibb provincia columns.
-    Other values pass through as-is (non-blocking) for manual review.
+    Aplica los aliases de JURISDICCION_A_DUX. Si no hay match, devuelve
+    el valor original en upper. La decisión de aceptar o no la jurisdicción
+    como IIBB válido la toma el caller contra JURISDICCIONES_INSCRIPTAS.
+
     Treats "0", "0.0", "None", "nan" as absence (Google Sheets stores
     empty numeric cells as "0").
     """
@@ -422,15 +435,22 @@ def _sumar_desglose(grupo):
         "perc_ganancias": 0.0,
     }
 
-    # Acumular IIBB por jurisdicción (normalizada a formato DUX)
+    # Acumular IIBB por jurisdicción inscripta. Las no inscriptas y la
+    # percepción municipal se reclasifican a no_gravado.
     iibb_por_juris = {}
 
-    def _acumular_iibb(importe_key, juris_key, rend):
+    def _procesar_iibb(importe_key, juris_key, rend):
         importe = safe_float(rend.get(importe_key))
         juris_raw = str(rend.get(juris_key, "")).strip()
-        if importe > 0 and juris_raw:
-            provincia_dux = resolver_jurisdiccion_dux(juris_raw)
+        if importe <= 0 or not juris_raw:
+            return
+        provincia_dux = resolver_jurisdiccion_dux(juris_raw)
+        if provincia_dux in JURISDICCIONES_INSCRIPTAS:
             iibb_por_juris[provincia_dux] = iibb_por_juris.get(provincia_dux, 0.0) + importe
+        else:
+            # Jurisdicción donde Expoconsult no está inscripto (ej. Misiones):
+            # el monto se computa como NO GRAVADO en el ENC (criterio Fabian).
+            totales["no_gravado"] += importe
 
     for rend in grupo:
         totales["neto_gravado"] += safe_float(rend.get("neto_gravado"))
@@ -441,16 +461,13 @@ def _sumar_desglose(grupo):
         totales["perc_iva"] += safe_float(rend.get("perc_iva"))
         totales["perc_ganancias"] += safe_float(rend.get("perc_ganancias"))
 
-        # IIBB slot 1 (primary)
-        _acumular_iibb("perc_iibb", "jurisdiccion", rend)
-        # IIBB slot 2
-        _acumular_iibb("perc_iibb_2", "jurisdiccion_iibb_2", rend)
-        # NOTA: Perc_Municipal se trata aquí como una IIBB adicional para
-        # ocupar el slot 3 del ENC. Esta es una asunción provisoria. Fabián
-        # debe confirmar si la imputación correcta es ésta o si va como un
-        # DET separado con código de cuenta 30 - PERCEPCIONES MUNICIPALES.
-        # Si es lo segundo, este código necesita un refactor.
-        _acumular_iibb("perc_municipal", "jurisdiccion_municipal", rend)
+        _procesar_iibb("perc_iibb", "jurisdiccion", rend)
+        _procesar_iibb("perc_iibb_2", "jurisdiccion_iibb_2", rend)
+
+        # Percepción Municipal: NO es IIBB. Va siempre a NO GRAVADO en el ENC,
+        # independientemente de jurisdicción (criterio Fabian, mail 2026-05-07).
+        # La columna Perc_Municipal de la planilla se mantiene para audit.
+        totales["no_gravado"] += safe_float(rend.get("perc_municipal"))
 
     if len(iibb_por_juris) > 3:
         excedentes = sorted(iibb_por_juris.keys())[3:]
@@ -636,29 +653,36 @@ def validar_rendiciones_para_export(rendiciones, codigo_concepto_fn=None,
             "accion": "Editá la rendición y completá el número de carpeta",
         })
 
-    # WARNING (not blocking): jurisdicciones IIBB que DUX puede no aceptar
-    juris_no_estandar = []
+    # WARNING (no bloqueante): IIBB de jurisdicciones donde Expoconsult no
+    # está inscripto se reclasifican a NO GRAVADO en el ENC del export DUX.
+    juris_reclasificadas = []
     for i, rend in enumerate(rendiciones):
         row_ref = rend.get("id_operacion", f"fila {i+1}")
-        for juris_key in ("jurisdiccion", "jurisdiccion_iibb_2", "jurisdiccion_municipal"):
+        for juris_key, importe_key in (
+            ("jurisdiccion", "perc_iibb"),
+            ("jurisdiccion_iibb_2", "perc_iibb_2"),
+        ):
             juris_raw = str(rend.get(juris_key, "")).strip()
-            if not juris_raw:
+            importe = safe_float(rend.get(importe_key))
+            if importe <= 0 or not juris_raw:
                 continue
             juris_dux = resolver_jurisdiccion_dux(juris_raw)
-            if juris_dux and juris_dux not in JURISDICCIONES_DUX_VALIDAS:
-                juris_no_estandar.append(
-                    f"row {row_ref}: {juris_key}='{juris_raw}' -> '{juris_dux}'"
+            if juris_dux and juris_dux not in JURISDICCIONES_INSCRIPTAS:
+                juris_reclasificadas.append(
+                    f"row {row_ref}: {juris_key}='{juris_raw}' (${importe:.2f}) -> noGravado"
                 )
 
-    if juris_no_estandar:
+    if juris_reclasificadas:
+        inscriptas = ", ".join(sorted(JURISDICCIONES_INSCRIPTAS))
         warnings.append({
-            "tipo": "Jurisdicción IIBB no estándar para DUX",
+            "tipo": "IIBB de jurisdicción no inscripta reclasificada",
             "mensaje": (
-                f"{len(juris_no_estandar)} percepciones con jurisdicción que DUX puede no aceptar. "
-                f"DUX v4 solo acepta 'CABA' y 'BS AS'."
+                f"{len(juris_reclasificadas)} percepciones IIBB de jurisdicciones donde "
+                f"Expoconsult no está inscripto serán imputadas a NO GRAVADO en el ENC. "
+                f"Inscriptas: {inscriptas}."
             ),
-            "filas_afectadas": juris_no_estandar,
-            "accion": "Verificá con el equipo de DUX si la jurisdicción es válida o ajustá manualmente.",
+            "filas_afectadas": juris_reclasificadas,
+            "accion": "Revisá los importes antes de exportar. Si la jurisdicción debe agregarse, avisá a Fabian.",
         })
 
     return errors, warnings
@@ -915,11 +939,11 @@ if __name__ == "__main__":
     check("IIBB slot 3 empty", enc3[24] == "" and enc3[25] == "",
           f"Y={enc3[24]} Z={enc3[25]}")
 
-    # Validation should warn (not error) about CORDOBA
+    # CORDOBA es jurisdicción inscripta → no debe generar warning
     errs3, warns3 = validar_rendiciones_para_export(t3, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
     check("No blocking errors", len(errs3) == 0, f"errors={len(errs3)}")
-    check("Validation warns about CORDOBA",
-          any("CORDOBA" in str(w.get("filas_afectadas", "")) for w in warns3),
+    check("No warnings (CABA + CORDOBA son inscriptas)",
+          len(warns3) == 0,
           f"Warnings: {[w['tipo'] for w in warns3]}")
 
     # ── Test 4: PROPIA Easy/Cencosud (2 IIBB + Municipal) ───────────
@@ -948,16 +972,20 @@ if __name__ == "__main__":
     enc4 = [r for r in f4 if r[0] == "ENC"][0]
     check("ENC is PROPIA", enc4[1] == "PROPIA")
 
-    # Municipal CORDOBA ($2963.10) accumulates with IIBB CORDOBA ($4938.50) = $7901.60
+    # Municipal CORDOBA ($2963.10) ya NO se mezcla con IIBB CORDOBA;
+    # va a NO GRAVADO. IIBB CORDOBA queda solo con su importe IIBB ($4938.50).
     # Sorted: CABA < CORDOBA
     check("IIBB slot 1 = CABA $4938.50",
           enc4[21] == "CABA" and abs(enc4[20] - 4938.50) < 0.01,
           f"U={enc4[20]} V={enc4[21]}")
-    check("IIBB slot 2 = CORDOBA $7901.60 (IIBB+Municipal)",
-          enc4[23] == "CORDOBA" and abs(enc4[22] - 7901.60) < 0.01,
+    check("IIBB slot 2 = CORDOBA $4938.50 (sin Municipal)",
+          enc4[23] == "CORDOBA" and abs(enc4[22] - 4938.50) < 0.01,
           f"W={enc4[22]} X={enc4[23]}")
     check("IIBB slot 3 empty", enc4[24] == "" and enc4[25] == "",
           f"Y={enc4[24]} Z={enc4[25]}")
+    check("noGravado = Municipal $2963.10",
+          abs(enc4[15] - 2963.10) < 0.01,
+          f"P={enc4[15]}")
 
     # ── Test 5: Sumatoria Easy ───────────────────────────────────────
     print("\n=== Test 5: Sumatoria Easy = total ticket ===")
@@ -1006,17 +1034,23 @@ if __name__ == "__main__":
     check("No errors", len(errs6) == 0, f"errors={len(errs6)}")
     check("No warnings ('0' filtered)", len(warns6) == 0, f"warnings={len(warns6)}")
 
-    # ── Test 7: real invalid jurisdiction = warning not error ────────
-    print("\n=== Test 7: CORDOBA jurisdiction = warning only ===")
+    # ── Test 7: jurisdiccion no inscripta = warning (reclasifica a noGravado)
+    print("\n=== Test 7: MISIONES (no inscripta) = warning + reclasifica ===")
     t7 = [{
         **t6[0],
         "id_operacion": "T7",
-        "perc_iibb": 1000, "jurisdiccion": "CORDOBA",
+        "perc_iibb": 1000, "jurisdiccion": "MISIONES",
         "jurisdiccion_iibb_2": "", "jurisdiccion_municipal": "",
     }]
     errs7, warns7 = validar_rendiciones_para_export(t7, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
     check("No blocking errors", len(errs7) == 0, f"errors={len(errs7)}")
-    check("1 warning for CORDOBA", len(warns7) == 1, f"warnings={len(warns7)}")
+    check("1 warning for MISIONES", len(warns7) == 1, f"warnings={len(warns7)}")
+    check("CORDOBA inscripta no warning",
+          all("CORDOBA" not in str(w.get("filas_afectadas", ""))
+              for w in validar_rendiciones_para_export(
+                  [{**t6[0], "id_operacion": "T7b", "perc_iibb": 1000,
+                    "jurisdiccion": "CORDOBA"}],
+                  mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)[1]))
 
     # ── Test 8: blocking error (unmapped concept) ────────────────────
     print("\n=== Test 8: unmapped concept = blocking error ===")
@@ -1037,7 +1071,7 @@ if __name__ == "__main__":
         **t6[0],
         "id_operacion": "T9",
         "concepto": "CONCEPTO_NO_MAPEADO",
-        "perc_iibb": 1000, "jurisdiccion": "CORDOBA",
+        "perc_iibb": 1000, "jurisdiccion": "MISIONES",
         "jurisdiccion_iibb_2": "", "jurisdiccion_municipal": "",
     }]
     errs9, warns9 = validar_rendiciones_para_export(t9, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
