@@ -46,25 +46,67 @@ if "data_synced" not in st.session_state:
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
 
-if st.session_state.get("needs_reset"):
-    # Clear specific widget-bound keys safely at the START of the run
-    keys_to_reset = [
-        "folder_input", "concept_input", "obs_input", "scanned_data", "desglose_data",
-        "manual_cuit", "manual_provider", "manual_tipo", "manual_suc", "manual_num", "manual_total", "manual_neto", "manual_afip",
-        "scan_suc_input", "scan_num_input", "scan_tipo_input", "scan_cuit_input", "scan_cuit_cliente_input", "scan_provider_input",
-        "manual_cuit_cliente"
-    ]
-    for k in keys_to_reset:
+# --- Rendición agrupada (múltiples comprobantes por viaje) ---
+# rendicion_id: UUID corto compartido por todos los comprobantes de la misma rendición.
+# Se genera en el primer save y se preserva mientras el usuario siga agregando.
+if "rendicion_id" not in st.session_state:
+    st.session_state.rendicion_id = ""
+if "comprobantes_guardados" not in st.session_state:
+    # Lista de dicts con resumen de los comprobantes ya guardados en la rendición en curso.
+    st.session_state.comprobantes_guardados = []
+if "post_save_prompt" not in st.session_state:
+    # True después de un save exitoso: muestra "¿Agregar otro o finalizar?"
+    st.session_state.post_save_prompt = False
+
+
+def _generar_rendicion_id():
+    """Genera un ID corto y legible: R-YYYYMMDD-XXXX (4 hex chars)."""
+    import secrets
+    suffix = secrets.token_hex(2).upper()
+    return f"R-{datetime.date.today().strftime('%Y%m%d')}-{suffix}"
+
+
+# Keys que pertenecen al bloque del COMPROBANTE (se limpian en reset parcial y total)
+_PER_COMPROBANTE_KEYS = [
+    "concept_input", "obs_input", "scanned_data", "desglose_data",
+    "perc_iibb_lista", "perc_municipal",
+    "manual_cuit", "manual_provider", "manual_tipo", "manual_suc", "manual_num",
+    "manual_total", "manual_neto", "manual_afip", "manual_cuit_cliente",
+    "scan_suc_input", "scan_num_input", "scan_tipo_input", "scan_cuit_input",
+    "scan_cuit_cliente_input", "scan_provider_input",
+    "imp_neto", "imp_no_grav", "imp_exento", "imp_iva21", "imp_iva105", "imp_iva27",
+    "imp_perc_iva", "imp_perc_gcias", "imp_iibb1", "imp_jur1", "imp_jur1_otra",
+    "imp_iibb2", "imp_jur2", "imp_jur2_otra", "imp_perc_muni", "imp_jur_muni", "imp_jur_muni_otra",
+    "confirma_exceso",
+]
+
+# Keys que pertenecen al bloque de la RENDICIÓN (se limpian solo en reset total)
+_PER_RENDICION_KEYS = ["folder_input"]
+
+
+def _clear_keys(keys):
+    for k in keys:
         if k in st.session_state:
             del st.session_state[k]
-    
-    # Also clear dynamic monto_imputar keys
+    # monto_imputar_<concepto> son dinámicos
     for k in list(st.session_state.keys()):
         if k.startswith("monto_imputar_"):
             del st.session_state[k]
-            
+
+
+if st.session_state.get("needs_partial_reset"):
+    # Limpia solo el bloque del comprobante, mantiene fecha/usuario/carpeta/rendicion_id
+    _clear_keys(_PER_COMPROBANTE_KEYS)
     st.session_state.uploader_key += 1
-    st.session_state.needs_reset = False # Reset the flag
+    st.session_state.needs_partial_reset = False
+
+if st.session_state.get("needs_full_reset"):
+    # Limpia TODO: cierra la rendición en curso y vuelve al estado inicial
+    _clear_keys(_PER_COMPROBANTE_KEYS + _PER_RENDICION_KEYS)
+    st.session_state.uploader_key += 1
+    st.session_state.rendicion_id = ""
+    st.session_state.comprobantes_guardados = []
+    st.session_state.needs_full_reset = False
 
 def configure_genai():
     api_key = os.getenv("GOOGLE_API_KEY")
@@ -232,42 +274,110 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
 
 st.title("Sistema de Gestión y Compensación de Gastos")
 
-# --- CARD 1: DATOS DEL OPERADOR ---
+# --- POST-SAVE PROMPT: "¿Agregar otro comprobante o finalizar?" ---
+# Si acabamos de guardar un comprobante con éxito, mostramos las opciones y
+# bloqueamos el resto del form hasta que el usuario decida.
+if st.session_state.get("post_save_prompt"):
+    n_guardados = len(st.session_state.comprobantes_guardados)
+    last = st.session_state.comprobantes_guardados[-1] if n_guardados else None
+    with st.container(border=True):
+        st.success(
+            f"✅ Comprobante guardado a la rendición "
+            f"**{st.session_state.rendicion_id}** "
+            f"({n_guardados} comprobante{'s' if n_guardados != 1 else ''} en total)"
+        )
+        if last:
+            estado_badge = f" — _{last['estado']}_" if last.get("estado") else ""
+            st.markdown(
+                f"**Último:** {last['concepto']} — ${last['monto']:,.2f} "
+                f"({last['numero']}){estado_badge}"
+            )
+        st.markdown("¿Agregar otro comprobante a esta rendición o finalizar?")
+
+        col_add, col_fin = st.columns(2)
+        if col_add.button("➕ Agregar otro comprobante", type="primary", use_container_width=True, key="btn_add_more"):
+            st.session_state.needs_partial_reset = True
+            st.session_state.post_save_prompt = False
+            st.rerun()
+        if col_fin.button("✅ Finalizar rendición", use_container_width=True, key="btn_finish"):
+            rend_id = st.session_state.rendicion_id
+            n = len(st.session_state.comprobantes_guardados)
+            st.session_state.needs_full_reset = True
+            st.session_state.post_save_prompt = False
+            st.toast(f"Rendición {rend_id} completada con {n} comprobante(s).")
+            st.rerun()
+    st.stop()
+
+
+# --- BANNER: rendición en curso (cuando hay >=1 comprobante ya guardado) ---
+rendicion_en_curso = bool(st.session_state.comprobantes_guardados)
+if rendicion_en_curso:
+    n = len(st.session_state.comprobantes_guardados)
+    with st.container(border=True):
+        st.markdown(
+            f"🧾 **Rendición en curso:** `{st.session_state.rendicion_id}` — "
+            f"{n} comprobante{'s' if n != 1 else ''} cargado{'s' if n != 1 else ''}. "
+            f"Datos del operador y carpeta bloqueados hasta finalizar."
+        )
+        with st.expander(f"Ver comprobantes ({n})"):
+            for idx, c in enumerate(st.session_state.comprobantes_guardados, 1):
+                estado_badge = f" _{c['estado']}_" if c.get("estado") else ""
+                st.markdown(
+                    f"{idx}. **{c['concepto']}** — ${c['monto']:,.2f} "
+                    f"({c['numero']}){estado_badge}"
+                )
+
+
+# --- CARD 1: DATOS DE LA RENDICIÓN (compartidos por todos los comprobantes) ---
 with st.container(border=True):
-    st.subheader("👤 Datos del Operador")
-    
+    st.subheader("👤 Datos de la rendición")
+
     col_op1, col_op2 = st.columns(2)
     with col_op1:
-        expense_date = st.date_input("Fecha", datetime.date.today())
-    
+        expense_date = st.date_input(
+            "Fecha", datetime.date.today(),
+            key="rend_fecha", disabled=rendicion_en_curso,
+        )
+
     with col_op2:
         users_list = sorted(list(data.USUARIOS_DB.keys()))
-        selected_user = st.selectbox("Usuario", users_list, index=None, placeholder="Seleccionar...")
-    
+        selected_user = st.selectbox(
+            "Usuario", users_list, index=None, placeholder="Seleccionar...",
+            key="rend_usuario", disabled=rendicion_en_curso,
+        )
+
     # Office logic
     office = ""
     if selected_user:
         office = data.USUARIOS_DB.get(selected_user, "---")
-    
-    st.text_input("Oficina", value=office, disabled=True)
 
+    st.text_input("Oficina", value=office, disabled=True, key="rend_oficina_display")
 
-# --- CARD 2: DETALLES DE OPERACIÓN & IMPUTACIÓN ---
-with st.container(border=True):
-    st.subheader("📝 Imputación de Gastos")
-    
-    # Folder Number is strictly required now. Supports multiple (comma separated)
-    folder_number = st.text_input("📂 Número de Carpeta (Obligatorio)", placeholder="Ej: IMP-2024-001, EXP-2024-050 (Separar con coma para prorrateo)", key="folder_input")
-    
+    # Folder Number compartido por toda la rendición. Soporta multi-carpeta separadas por coma.
+    folder_number = st.text_input(
+        "📂 Número de Carpeta (Obligatorio)",
+        placeholder="Ej: IMP-2024-001, EXP-2024-050 (Separar con coma para prorrateo)",
+        key="folder_input", disabled=rendicion_en_curso,
+    )
+
     c1, c2 = st.columns(2)
     with c1:
-        # Use fixed operations from data module
-        op_type = st.selectbox("Tipo de Operación", data.OPERACIONES_DB)
+        op_type = st.selectbox(
+            "Tipo de Operación", data.OPERACIONES_DB,
+            key="rend_op_type", disabled=rendicion_en_curso,
+        )
     with c2:
-        client = st.selectbox("Cliente", data.CLIENTES_DB, index=None, placeholder="Buscar Cliente...")
-    
+        client = st.selectbox(
+            "Cliente", data.CLIENTES_DB, index=None, placeholder="Buscar Cliente...",
+            key="rend_cliente", disabled=rendicion_en_curso,
+        )
+
+
+# --- CARD 2: IMPUTACIÓN DEL COMPROBANTE (cambia por cada comprobante) ---
+with st.container(border=True):
+    st.subheader("📝 Imputación del comprobante")
+
     st.markdown("### Concepto")
-    # Filter concepts by Office (uses composite key mapping)
     if office:
         concepts_list = data.get_conceptos_para_oficina(office)
         st.caption(f"🔍 Mostrando {len(concepts_list)} conceptos para oficina: **{office}**")
@@ -275,21 +385,24 @@ with st.container(border=True):
         concepts_list = sorted(list(data.CONCEPTOS_DB.keys()))
         st.caption("🔍 Mostrando todos los conceptos (Sin filtro de oficina)")
 
-    selected_concept = st.selectbox("Seleccionar Concepto", concepts_list, index=None, label_visibility="collapsed", placeholder="Escribe para buscar...", key="concept_input")
+    selected_concept = st.selectbox(
+        "Seleccionar Concepto", concepts_list, index=None, label_visibility="collapsed",
+        placeholder="Escribe para buscar...", key="concept_input",
+    )
 
-    # Auto-fill logic (uses office-aware lookup)
     suggested_amount_concept = 0.0
     if selected_concept:
         suggested_amount_concept = data.get_monto_sugerido(selected_concept, office)
-    
-    # User Input for IMPUTATION (Monto a Imputar)
-    monto_imputar = st.number_input("💵 Monto a Imputar (Usuario)",
-                                  value=suggested_amount_concept if suggested_amount_concept > 0 else 0.0,
-                                  step=100.0, format="%.2f",
-                                  help="El monto que desea asignar a esta carpeta. Puede diferir del ticket.",
-                                  key=f"monto_imputar_{selected_concept}")
 
-    # --- EXCESS DETECTION ---
+    monto_imputar = st.number_input(
+        "💵 Monto a Imputar (Usuario)",
+        value=suggested_amount_concept if suggested_amount_concept > 0 else 0.0,
+        step=100.0, format="%.2f",
+        help="El monto que desea asignar a esta carpeta. Puede diferir del ticket.",
+        key=f"monto_imputar_{selected_concept}",
+    )
+
+    # --- EXCESS DETECTION (granular: solo este comprobante queda PENDIENTE) ---
     excede_sugerido = False
     confirma_exceso = False
     if suggested_amount_concept > 0 and monto_imputar > suggested_amount_concept:
@@ -299,15 +412,18 @@ with st.container(border=True):
         st.warning(
             f"El monto ingresado (${monto_imputar:,.2f}) supera el monto sugerido "
             f"(${suggested_amount_concept:,.2f}) en **${diff_exceso:,.2f}** ({pct_exceso:.1f}%). "
-            f"La rendición quedará sujeta a revisión."
+            f"Este comprobante quedará sujeto a revisión."
         )
         confirma_exceso = st.checkbox(
-            "Confirmo que esta rendición excede el monto sugerido y quedará sujeta a revisión",
-            key="confirma_exceso"
+            "Confirmo que este comprobante excede el monto sugerido y quedará sujeto a revisión",
+            key="confirma_exceso",
         )
 
-    # New Field: Observations (Column AD)
-    observaciones = st.text_area("📝 Observaciones (Opcional)", placeholder="Detalles adicionales, número de guía, etc...", height=80, key="obs_input")
+    observaciones = st.text_area(
+        "📝 Observaciones (Opcional)",
+        placeholder="Detalles adicionales, número de guía, etc...",
+        height=80, key="obs_input",
+    )
 
 
 # --- CARD 3: COMPROBANTE & IA ---
@@ -746,13 +862,17 @@ if cuit_input and num_comp_input:
 # Disable save if: duplicate, or excess not confirmed
 save_disabled = is_duplicate or (excede_sugerido and not confirma_exceso)
 
-if st.button("💾 Guardar Rendición", type="primary", use_container_width=True, disabled=save_disabled):
+if st.button("💾 Guardar comprobante", type="primary", use_container_width=True, disabled=save_disabled):
     # Validation
     if not selected_user or not folder_number or not selected_concept:
         st.error("⚠️ Faltan datos obligatorios: Usuario, Carpeta o Concepto.")
     elif monto_imputar <= 0 and monto_ticket_total <= 0:
          st.error("⚠️ Debe haber un monto a imputar o un ticket válido.")
     else:
+        # Generate rendicion_id on the FIRST comprobante of the group; reuse for subsequent ones.
+        if not st.session_state.rendicion_id:
+            st.session_state.rendicion_id = _generar_rendicion_id()
+        rendicion_id = st.session_state.rendicion_id
         # $1000 Closing Rule (Puchito)
         diff = abs(monto_ticket_total - monto_imputar)
         if 0 < diff < 1000.0:
@@ -864,7 +984,10 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
                 # Original amounts (sin prorratear) for CONTROL_SALDOS
                 "monto_ticket_total_original": monto_ticket_total_original,
                 "monto_neto_original": monto_neto_original,
-                "no_gravado_original": no_gravado_original
+                "no_gravado_original": no_gravado_original,
+
+                # Group ID — same for all comprobantes en la misma rendición
+                "rendicion_id": rendicion_id,
             }
              
              # Determine estado override for excess
@@ -884,17 +1007,10 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
              progress_bar.progress((idx + 1) / N)
 
         if success_count == N:
-            if excede_sugerido:
-                st.success(
-                    f"Rendición guardada en {N} carpeta(s) con estado **PENDIENTE REVISIÓN**. "
-                    f"Los autorizantes serán notificados."
-                )
-            else:
-                st.toast(f"Rendición guardada exitosamente en {N} carpetas.")
-
             # Send email notification if excess (idempotent via session flag)
-            # Use folder+concept+amount as stable key so F5 doesn't re-send
-            mail_key = f"_mail_sent_{folder_number}_{selected_concept}_{monto_imputar}"
+            # Key includes rendicion_id + comprobante number so two comprobantes
+            # con mismo concepto/monto en la misma rendición no se pisen.
+            mail_key = f"_mail_sent_{rendicion_id}_{cuit_input}_{num_comp_input}"
             if excede_sugerido and mail_key not in st.session_state:
                 st.session_state[mail_key] = True
                 try:
@@ -912,22 +1028,35 @@ if st.button("💾 Guardar Rendición", type="primary", use_container_width=True
                         )
                         if not mail_ok:
                             st.warning(
-                                "La rendición se guardó. No se pudo enviar la notificación "
+                                "El comprobante se guardó. No se pudo enviar la notificación "
                                 f"automática, contactá a administración. ({mail_msg})"
                             )
                 except Exception as e:
                     st.warning(
-                        "La rendición se guardó. No se pudo enviar la notificación "
+                        "El comprobante se guardó. No se pudo enviar la notificación "
                         f"automática, contactá a administración. ({e})"
                     )
 
-            # Set reset flag for NEXT run
-            st.session_state.needs_reset = True
+            # Add summary to "rendición en curso" list so the banner refleja
+            # cuántos comprobantes ya cargó el usuario.
+            suc_pad = pto_vta_input.zfill(5) if pto_vta_input and pto_vta_input.isdigit() else pto_vta_input
+            num_pad = num_comp_input.zfill(8) if num_comp_input and num_comp_input.isdigit() else num_comp_input
+            numero_str = f"{suc_pad}-{num_pad}" if (suc_pad or num_pad) else "(sin nº)"
+            estado_resumen = "PENDIENTE REVISIÓN" if excede_sugerido else "Guardado"
+            st.session_state.comprobantes_guardados.append({
+                "concepto": selected_concept,
+                "monto": float(monto_imputar or 0),
+                "numero": numero_str,
+                "estado": estado_resumen,
+            })
 
-            import time
-            time.sleep(1.5 if excede_sugerido else 1.0)
+            # Show post-save prompt on next rerun: "¿Agregar otro comprobante o finalizar?"
+            st.session_state.post_save_prompt = True
+            # Limpia el bloque del comprobante para que, si vuelve a aparecer el form
+            # (caso: el usuario clickea "Agregar otro"), arranque limpio.
+            st.session_state.needs_partial_reset = True
             st.rerun()
-            
+
         else:
             st.warning(f"⚠️ Se guardaron {success_count} de {N} carpetas. Revise la consola.")
 
@@ -1105,7 +1234,14 @@ with st.expander("⚙️ Administración (Exportación Dux)", expanded=False):
                     c2.metric("Monto Imputado", f"${float(pend.get('monto_imputar', 0) or 0):,.2f}")
                     c3.metric("Monto Sugerido", f"${float(pend.get('monto_sugerido', 0) or 0):,.2f}")
 
-                    st.caption(f"Carpeta: {pend['numero_carpeta']} | CUIT: {pend['proveedor_cuit']}")
+                    rend_id = pend.get("rendicion_id", "")
+                    caption_parts = [
+                        f"Carpeta: {pend['numero_carpeta']}",
+                        f"CUIT: {pend['proveedor_cuit']}",
+                    ]
+                    if rend_id:
+                        caption_parts.append(f"Rendición: {rend_id}")
+                    st.caption(" | ".join(caption_parts))
 
                     if pend.get("ticket_url"):
                         st.markdown(f"[Ver comprobante]({pend['ticket_url']})")

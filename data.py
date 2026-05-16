@@ -264,7 +264,7 @@ def asegurar_columna_codigo_dux_usuarios(sh):
 
 
 def migrar_headers_rendiciones_log(sh):
-    """Idempotent migration: fill GAP headers and add Fecha_Revision at end.
+    """Idempotent migration: fill GAP headers and add Fecha_Revision + Rendicion_ID at end.
 
     Does NOT rename existing headers (Camino A: code adapts to real headers).
     Only fills empty positions and appends new columns:
@@ -272,6 +272,7 @@ def migrar_headers_rendiciones_log(sh):
     - pos 33 (AH): Motivo_Rechazo (if empty)
     - pos 34 (AI): Revisado_Por (if empty)
     - pos 39 (AN): Fecha_Revision (if missing)
+    - pos 40 (AO): Rendicion_ID (if missing) — agrupa comprobantes de una misma rendición/viaje
 
     Existing headers at pos 23 (Percepción IIBB) and 24 (Provincia/Jurisdicción)
     are NOT renamed — SHEET_KEY_MAP maps them to internal keys directly.
@@ -310,6 +311,13 @@ def migrar_headers_rendiciones_log(sh):
         if ws.col_count <= target_col:
             ws.resize(cols=target_col + 1)
         updates.append({"range": "AN1", "values": [["Fecha_Revision"]]})
+
+    # Add Rendicion_ID at pos 40 (AO) if not present
+    if "RENDICION_ID" not in headers_upper:
+        target_col = 40  # 0-indexed
+        if ws.col_count <= target_col:
+            ws.resize(cols=target_col + 1)
+        updates.append({"range": "AO1", "values": [["Rendicion_ID"]]})
 
     if updates:
         ws.batch_update(updates)
@@ -1014,12 +1022,13 @@ def log_rendicion_to_sheet(payload, ticket_url="", estado_override=None):
             payload.get("perc_municipal", 0),            # 38 (AL). Perc_Municipal
             payload.get("jurisdiccion_municipal", ""),   # 39 (AM). Jurisdiccion_Municipal
             "",                                         # 40 (AN). Fecha_Revision
+            str(payload.get("rendicion_id", "") or ""), # 41 (AO). Rendicion_ID
         ]
 
         # Use explicit range update instead of append_row to prevent column shifting.
         # append_row can misalign when the sheet grid has extra empty columns.
         next_row = len(ws_log.get_all_values()) + 1
-        cell_range = f"A{next_row}:AN{next_row}"
+        cell_range = f"A{next_row}:AO{next_row}"
         ws_log.update(range_name=cell_range, values=[row])
         return True
     except Exception as e:
@@ -1435,6 +1444,7 @@ def leer_pendientes_revision():
                 "monto_imputar": row[26],
                 "ticket_url": row[27],
                 "estado": estado,
+                "rendicion_id": row[40] if len(row) > 40 else "",
             })
 
         return results
@@ -1652,6 +1662,7 @@ SHEET_KEY_MAP = {
     "Perc_Municipal": "perc_municipal",                      # AL (37)
     "Jurisdiccion_Municipal": "jurisdiccion_municipal",      # AM (38)
     "Fecha_Revision": "fecha_revision",                      # AN (39)
+    "Rendicion_ID": "rendicion_id",                          # AO (40)
 }
 
 
