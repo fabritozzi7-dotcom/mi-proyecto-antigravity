@@ -1,4 +1,4 @@
-import os
+﻿import os
 import streamlit as st
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -318,6 +318,14 @@ def migrar_headers_rendiciones_log(sh):
         if ws.col_count <= target_col:
             ws.resize(cols=target_col + 1)
         updates.append({"range": "AO1", "values": [["Rendicion_ID"]]})
+
+    # Add Perc_IIBB_3 at pos 41 (AP) if not present
+    if "PERC_IIBB_3" not in headers_upper:
+        target_col = 41  # 0-indexed
+        if ws.col_count <= target_col:
+            ws.resize(cols=target_col + 2)  # +2 for both AP and AQ
+        updates.append({"range": "AP1", "values": [["Perc_IIBB_3"]]})
+        updates.append({"range": "AQ1", "values": [["Jurisdiccion_IIBB_3"]]})
 
     if updates:
         ws.batch_update(updates)
@@ -1023,12 +1031,14 @@ def log_rendicion_to_sheet(payload, ticket_url="", estado_override=None):
             payload.get("jurisdiccion_municipal", ""),   # 39 (AM). Jurisdiccion_Municipal
             "",                                         # 40 (AN). Fecha_Revision
             str(payload.get("rendicion_id", "") or ""), # 41 (AO). Rendicion_ID
+            payload.get("perc_iibb_3", 0),              # 42 (AP). Perc_IIBB_3
+            payload.get("jurisdiccion_iibb_3", ""),     # 43 (AQ). Jurisdiccion_IIBB_3
         ]
 
         # Use explicit range update instead of append_row to prevent column shifting.
         # append_row can misalign when the sheet grid has extra empty columns.
         next_row = len(ws_log.get_all_values()) + 1
-        cell_range = f"A{next_row}:AO{next_row}"
+        cell_range = f"A{next_row}:AQ{next_row}"
         ws_log.update(range_name=cell_range, values=[row])
         return True
     except Exception as e:
@@ -1663,6 +1673,8 @@ SHEET_KEY_MAP = {
     "Jurisdiccion_Municipal": "jurisdiccion_municipal",      # AM (38)
     "Fecha_Revision": "fecha_revision",                      # AN (39)
     "Rendicion_ID": "rendicion_id",                          # AO (40)
+    "Perc_IIBB_3": "perc_iibb_3",                           # AP (41)
+    "Jurisdiccion_IIBB_3": "jurisdiccion_iibb_3",           # AQ (42)
 }
 
 

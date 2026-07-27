@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import datetime
 import requests
 import json
@@ -711,14 +711,22 @@ if "scanned_data" in st.session_state and final_image_bytes:
             inp_iibb2 = 0.0
             inp_jur2 = ""
 
-        # 3+ IIBB warning
-        if len(_iibb_list) > 2:
-            extra_total = sum(e["monto"] for e in _iibb_list[2:])
-            st.warning(
-                f"La factura tiene {len(_iibb_list)} jurisdicciones IIBB. "
-                f"Solo se cargarán las dos de mayor monto. Las restantes suman ${extra_total:,.2f}. "
-                f"Revisá manualmente o cargá las demás como rendición separada."
-            )
+        # Row 5b: IIBB 3 (show if IIBB2 > 0 or there's data)
+        _iibb3_default = float(_iibb_list[2]["monto"]) if len(_iibb_list) > 2 else 0.0
+        _jur3_default = (_iibb_list[2].get("jurisdiccion", "") if len(_iibb_list) > 2 else "").upper()
+        if _iibb3_default > 0 or inp_iibb2 > 0:
+            st.markdown("**Percepci\u00f3n IIBB 3**")
+            ic5, ic6 = st.columns([1, 1])
+            with ic5:
+                inp_iibb3 = st.number_input("Monto IIBB 3", value=_iibb3_default, step=100.0, format="%.2f", key="imp_iibb3")
+            with ic6:
+                _jur3_idx = JURISDICCIONES_ARG.index(_jur3_default) if _jur3_default in JURISDICCIONES_ARG else 0
+                inp_jur3 = st.selectbox("Jurisdicci\u00f3n IIBB 3", JURISDICCIONES_ARG, index=_jur3_idx, key="imp_jur3")
+                if inp_jur3 == "OTRA":
+                    inp_jur3 = st.text_input("Jurisdicci\u00f3n 3 (manual)", key="imp_jur3_otra")
+        else:
+            inp_iibb3 = 0.0
+            inp_jur3 = ""
 
         # Row 6: Perc Municipal (show if there's data)
         _muni_monto = float(_muni.get("monto", 0) or 0) if _muni else 0.0
@@ -739,7 +747,7 @@ if "scanned_data" in st.session_state and final_image_bytes:
 
         # Real-time sum validation
         suma_componentes = (inp_neto + inp_no_grav + inp_exento + inp_iva21 + inp_iva105 + inp_iva27
-                           + inp_perc_iva + inp_perc_gcias + inp_iibb1 + inp_iibb2 + inp_perc_muni)
+                           + inp_perc_iva + inp_perc_gcias + inp_iibb1 + inp_iibb2 + inp_iibb3 + inp_perc_muni)
         diff_check = abs(monto_ticket_total - suma_componentes)
 
         st.markdown(f"**Suma de componentes:** ${suma_componentes:,.2f}  |  **Monto total ticket:** ${monto_ticket_total:,.2f}  |  **Diferencia:** ${diff_check:,.2f}")
@@ -978,6 +986,8 @@ if st.button("💾 Guardar comprobante", type="primary", use_container_width=Tru
                 "jurisdiccion_iibb_1": p_desglose.get("columna_Y_jurisdiccion_code", ""),
                 "perc_iibb_2": inp_iibb2 / N,
                 "jurisdiccion_iibb_2": inp_jur2,
+                "perc_iibb_3": inp_iibb3 / N,
+                "jurisdiccion_iibb_3": inp_jur3,
                 "perc_municipal": inp_perc_muni / N,
                 "jurisdiccion_municipal": inp_jur_muni,
 

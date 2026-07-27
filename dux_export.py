@@ -1,4 +1,4 @@
-"""
+﻿"""
 dux_export.py — Generador de Excel ENC/DET para importación en Dux.
 
 Toma rendiciones de RENDICIONES_LOG (Google Sheets) y produce un .xlsx
@@ -35,10 +35,22 @@ JURISDICCION_A_DUX = {
     "BUENOS AIRES": "BS AS",
     "BS AS": "BS AS",
     "PROVINCIA DE BUENOS AIRES": "BS AS",
+    "CORDOBA": "CORDOBA",
+    "CBA": "CORDOBA",
+    "MENDOZA": "MENDOZA",
+    "MZA": "MENDOZA",
+    "SAN LUIS": "SAN LUIS",
+    "SL": "SAN LUIS",
 }
 
 # Set of jurisdiction values that DUX v4 officially accepts.
-JURISDICCIONES_DUX_VALIDAS = {"CABA", "BS AS"}
+JURISDICCIONES_DUX_VALIDAS = {"CABA", "BS AS", "CORDOBA", "MENDOZA", "SAN LUIS"}
+
+# Jurisdicciones en las que Expoconsult esta inscripta en IIBB.
+# Percepciones IIBB de jurisdicciones NO inscriptas se reclasifican a No Gravado.
+JURISDICCIONES_INSCRIPTAS = {"CABA", "CAPITAL FEDERAL", "CIUDAD AUTONOMA DE BUENOS AIRES",
+                             "BUENOS AIRES", "BS AS", "PROVINCIA DE BUENOS AIRES",
+                             "CORDOBA", "CBA", "MENDOZA", "MZA", "SAN LUIS", "SL"}
 
 # Headers de RENDICIONES_LOG → clave interna (por posición 0-30)
 # Maps RENDICIONES_LOG columns by position (0-indexed) to internal keys.
@@ -85,6 +97,8 @@ HEADER_MAP = [
     "perc_municipal",      # 37 (AL) Perc_Municipal
     "jurisdiccion_municipal", # 38 (AM) Jurisdiccion_Municipal
     "fecha_revision",      # 39 (AN) Fecha_Revision
+    "perc_iibb_3",         # 40 (AO) Perc_IIBB_3
+    "jurisdiccion_iibb_3", # 41 (AP) Jurisdiccion_IIBB_3
 ]
 
 DUX_HEADERS = [
@@ -429,6 +443,14 @@ def _sumar_desglose(grupo):
         importe = safe_float(rend.get(importe_key))
         juris_raw = str(rend.get(juris_key, "")).strip()
         if importe > 0 and juris_raw:
+            # Si la jurisdiccion no esta inscripta, reclasificar a No Gravado
+            juris_norm = juris_raw.upper().strip()
+            if juris_norm not in JURISDICCIONES_INSCRIPTAS:
+                totales["no_gravado"] += importe
+                logger.info(
+                    f"IIBB {juris_raw} no inscripta -> reclasificada a No Gravado (${importe:.2f})"
+                )
+                return
             provincia_dux = resolver_jurisdiccion_dux(juris_raw)
             iibb_por_juris[provincia_dux] = iibb_por_juris.get(provincia_dux, 0.0) + importe
 
@@ -445,12 +467,14 @@ def _sumar_desglose(grupo):
         _acumular_iibb("perc_iibb", "jurisdiccion", rend)
         # IIBB slot 2
         _acumular_iibb("perc_iibb_2", "jurisdiccion_iibb_2", rend)
-        # NOTA: Perc_Municipal se trata aquí como una IIBB adicional para
-        # ocupar el slot 3 del ENC. Esta es una asunción provisoria. Fabián
-        # debe confirmar si la imputación correcta es ésta o si va como un
-        # DET separado con código de cuenta 30 - PERCEPCIONES MUNICIPALES.
-        # Si es lo segundo, este código necesita un refactor.
-        _acumular_iibb("perc_municipal", "jurisdiccion_municipal", rend)
+        # IIBB slot 3
+        _acumular_iibb("perc_iibb_3", "jurisdiccion_iibb_3", rend)
+        # Percepcion Municipal -> No Gravado en DUX (confirmado por Fabian 04/05).
+        # La columna Perc_Municipal en RENDICIONES_LOG se mantiene para deteccion
+        # visual y carga manual en DUX con cuenta 30 - PERCEPCIONES MUNICIPALES.
+        perc_muni = safe_float(rend.get("perc_municipal"))
+        if perc_muni > 0:
+            totales["no_gravado"] += perc_muni
 
     if len(iibb_por_juris) > 3:
         excedentes = sorted(iibb_por_juris.keys())[3:]
@@ -918,8 +942,8 @@ if __name__ == "__main__":
     # Validation should warn (not error) about CORDOBA
     errs3, warns3 = validar_rendiciones_para_export(t3, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
     check("No blocking errors", len(errs3) == 0, f"errors={len(errs3)}")
-    check("Validation warns about CORDOBA",
-          any("CORDOBA" in str(w.get("filas_afectadas", "")) for w in warns3),
+    check("No warnings (CORDOBA is now valid jurisdiction)",
+          len(warns3) == 0,
           f"Warnings: {[w['tipo'] for w in warns3]}")
 
     # ── Test 4: PROPIA Easy/Cencosud (2 IIBB + Municipal) ───────────
@@ -948,16 +972,21 @@ if __name__ == "__main__":
     enc4 = [r for r in f4 if r[0] == "ENC"][0]
     check("ENC is PROPIA", enc4[1] == "PROPIA")
 
-    # Municipal CORDOBA ($2963.10) accumulates with IIBB CORDOBA ($4938.50) = $7901.60
+    # Municipal CORDOBA ($2963.10) goes to No Gravado (confirmed by Fabian 04/05)
+    # IIBB: CABA $4938.50 + CORDOBA $4938.50 (only actual IIBB)
     # Sorted: CABA < CORDOBA
     check("IIBB slot 1 = CABA $4938.50",
           enc4[21] == "CABA" and abs(enc4[20] - 4938.50) < 0.01,
           f"U={enc4[20]} V={enc4[21]}")
-    check("IIBB slot 2 = CORDOBA $7901.60 (IIBB+Municipal)",
-          enc4[23] == "CORDOBA" and abs(enc4[22] - 7901.60) < 0.01,
+    check("IIBB slot 2 = CORDOBA $4938.50 (solo IIBB, sin Municipal)",
+          enc4[23] == "CORDOBA" and abs(enc4[22] - 4938.50) < 0.01,
           f"W={enc4[22]} X={enc4[23]}")
     check("IIBB slot 3 empty", enc4[24] == "" and enc4[25] == "",
           f"Y={enc4[24]} Z={enc4[25]}")
+    # No Gravado should include the municipal perception
+    check("No Gravado includes Municipal $2963.10",
+          abs(enc4[15] - 2963.10) < 0.01,
+          f"P(noGravado)={enc4[15]}")
 
     # ── Test 5: Sumatoria Easy ───────────────────────────────────────
     print("\n=== Test 5: Sumatoria Easy = total ticket ===")
@@ -1016,9 +1045,9 @@ if __name__ == "__main__":
     }]
     errs7, warns7 = validar_rendiciones_para_export(t7, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
     check("No blocking errors", len(errs7) == 0, f"errors={len(errs7)}")
-    check("1 warning for CORDOBA", len(warns7) == 1, f"warnings={len(warns7)}")
-
-    # ── Test 8: blocking error (unmapped concept) ────────────────────
+    check("No warnings (CORDOBA is now valid jurisdiction)",
+          len(warns7) == 0,
+          len(warns7) == 0)
     print("\n=== Test 8: unmapped concept = blocking error ===")
     t8 = [{
         **t6[0],
@@ -1042,7 +1071,7 @@ if __name__ == "__main__":
     }]
     errs9, warns9 = validar_rendiciones_para_export(t9, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
     check("1 blocking error", len(errs9) == 1, f"errors={len(errs9)}")
-    check("1 warning", len(warns9) == 1, f"warnings={len(warns9)}")
+    check("No jurisdiction warning (CORDOBA valid)", len(warns9) == 0, f"warnings={len(warns9)}")
 
     # ── Summary ──────────────────────────────────────────────────────
     print(f"\n{'='*50}")
