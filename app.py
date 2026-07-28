@@ -19,6 +19,12 @@ JURISDICCIONES_ARG = [
     "TIERRA DEL FUEGO", "TUCUMAN", "OTRA",
 ]
 
+# Conceptos que NO requieren carpeta, cliente ni tipo de operacion obligatorios.
+# Para estos conceptos, el sistema permite guardar sin esos campos.
+CONCEPTOS_SIN_CARPETA = {
+    "VIAJES Y GASTOS DE REPRESENTACION",
+}
+
 # Load environment variables
 load_dotenv()
 
@@ -225,8 +231,8 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         
         # ERROR HANDLING 429: Retry Logic with Exponential Backoff
         import time
-        max_retries = 3
-        retry_delay = 2 # Starting delay in seconds
+        max_retries = 5
+        retry_delay = 4 # Starting delay in seconds
         
         for attempt in range(max_retries):
             try:
@@ -240,7 +246,9 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
                         time.sleep(retry_delay)
                         retry_delay *= 2 # Double the delay for next time
                         continue
-                raise e # Re-raise if not 429 or max retries reached
+                if "429" in error_str or "ResourceExhausted" in error_str:
+                    return "RATE_LIMIT: Se agoto el limite de escaneos por minuto. Espere 30 segundos y vuelva a intentar."
+                raise e # Re-raise if not 429 or unknown error
         
         if not response or not response.text:
              # Check for safety blocks if text is empty
@@ -355,8 +363,8 @@ with st.container(border=True):
 
     # Folder Number compartido por toda la rendición. Soporta multi-carpeta separadas por coma.
     folder_number = st.text_input(
-        "📂 Número de Carpeta (Obligatorio)",
-        placeholder="Ej: IMP-2024-001, EXP-2024-050 (Separar con coma para prorrateo)",
+        "📂 Número de Carpeta (Segun concepto)",
+        placeholder="Ej: IMP-2024-001, EXP-2024-050 (Separar con coma para prorrateo). No aplica para Gastos de Representacion.",
         key="folder_input", disabled=rendicion_en_curso,
     )
 
@@ -872,8 +880,12 @@ save_disabled = is_duplicate or (excede_sugerido and not confirma_exceso)
 
 if st.button("💾 Guardar comprobante", type="primary", use_container_width=True, disabled=save_disabled):
     # Validation
-    if not selected_user or not folder_number or not selected_concept:
-        st.error("⚠️ Faltan datos obligatorios: Usuario, Carpeta o Concepto.")
+    # Conceptos de representacion no requieren carpeta, tipo de operacion ni cliente
+    es_representacion = (selected_concept or "").upper().strip() in CONCEPTOS_SIN_CARPETA
+    if not selected_user or not selected_concept:
+        st.error("Faltan datos obligatorios: Usuario o Concepto.")
+    elif not es_representacion and not folder_number:
+        st.error("Falta el Numero de Carpeta (obligatorio para este concepto).")
     elif monto_imputar <= 0 and monto_ticket_total <= 0:
          st.error("⚠️ Debe haber un monto a imputar o un ticket válido.")
     else:
@@ -931,6 +943,8 @@ if st.button("💾 Guardar comprobante", type="primary", use_container_width=Tru
 
         # 2. PRORATION LOGIC & SAVE LOOP
         folders = [f.strip() for f in folder_number.split(",") if f.strip()]
+        if not folders:
+            folders = ["REPRESENTACION"]  # Default for gastos de representacion
         import math
         N = len(folders)
         
