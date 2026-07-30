@@ -837,6 +837,7 @@ elif modo_manual:
     inp_perc_iva = 0.0; inp_perc_gcias = 0.0
     inp_iibb1 = 0.0; inp_jur1 = ""
     inp_iibb2 = 0.0; inp_jur2 = ""
+    inp_iibb3 = 0.0; inp_jur3 = ""
     inp_perc_muni = 0.0; inp_jur_muni = ""
 else:
     # No scan and Toggle OFF -> Initialize variables to avoid NameError
@@ -855,6 +856,7 @@ else:
     inp_perc_iva = 0.0; inp_perc_gcias = 0.0
     inp_iibb1 = 0.0; inp_jur1 = ""
     inp_iibb2 = 0.0; inp_jur2 = ""
+    inp_iibb3 = 0.0; inp_jur3 = ""
     inp_perc_muni = 0.0; inp_jur_muni = ""
 
 
