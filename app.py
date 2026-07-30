@@ -441,8 +441,8 @@ with st.container(border=True):
     )
 
 
-# --- CARD 3: COMPROBANTE & IA ---
-with st.container(border=True):
+    st.subheader("📷 Comprobante (Opcional)")
+    st.caption("💡 **Para rendiciones con múltiples comprobantes (Hotel, Comidas, Peajes, etc.):** Subí y guardá un comprobante a la vez. Al hacer clic en *Guardar comprobante*, el sistema te preguntará si deseás agregar otro a la misma rendición.")
     st.subheader("📸 Comprobante (Opcional)")
     
     tab_cam, tab_upload = st.tabs(["📷 Cámara", "📁 Subir"])
