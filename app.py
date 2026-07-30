@@ -309,11 +309,11 @@ if st.session_state.get("post_save_prompt"):
             )
         st.markdown("¿Agregar otro comprobante a esta rendición o finalizar?")
 
-        col_add, col_fin = st.columns(2)
         if col_add.button("➕ Agregar otro comprobante", type="primary", use_container_width=True, key="btn_add_more"):
+            if "multi_file_idx" in st.session_state:
+                st.session_state.multi_file_idx += 1
             st.session_state.needs_partial_reset = True
             st.session_state.post_save_prompt = False
-            st.rerun()
         if col_fin.button("✅ Finalizar rendición", use_container_width=True, key="btn_finish"):
             rend_id = st.session_state.rendicion_id
             n = len(st.session_state.comprobantes_guardados)
@@ -440,12 +440,10 @@ with st.container(border=True):
         height=80, key="obs_input",
     )
 
-
+    st.caption("💡 **Múltiples comprobantes:** Podés seleccionar varios archivos (PDFs/fotos) juntos. El sistema te permitirá procesar e imputar cada uno bajo la misma rendición.")
     st.subheader("📷 Comprobante (Opcional)")
-    st.caption("💡 **Para rendiciones con múltiples comprobantes (Hotel, Comidas, Peajes, etc.):** Subí y guardá un comprobante a la vez. Al hacer clic en *Guardar comprobante*, el sistema te preguntará si deseás agregar otro a la misma rendición.")
-    st.subheader("📸 Comprobante (Opcional)")
     
-    tab_cam, tab_upload = st.tabs(["📷 Cámara", "📁 Subir"])
+    tab_cam, tab_upload = st.tabs(["📷 Cámara", "📁 Subir archivos"])
     
     final_image_bytes = None
     final_mime_type = "image/jpeg" # Default
@@ -457,12 +455,31 @@ with st.container(border=True):
             final_mime_type = "image/jpeg"
             
     with tab_upload:
-        file_input = st.file_uploader("Seleccionar archivo", type=["jpg", "png", "jpeg", "pdf"], key=f"uploader_{st.session_state.uploader_key}")
-        if file_input: 
-            final_image_bytes = file_input.getvalue()
-            final_mime_type = file_input.type # Dynamically get mime type (e.g. application/pdf)
-
-    if final_image_bytes:
+        files_input = st.file_uploader(
+            "Seleccionar archivo(s)", 
+            type=["jpg", "png", "jpeg", "pdf"], 
+            accept_multiple_files=True, 
+            key=f"uploader_{st.session_state.uploader_key}"
+        )
+        if files_input:
+            if len(files_input) == 1:
+                active_file = files_input[0]
+            else:
+                st.info(f"📂 Se seleccionaron **{len(files_input)} comprobantes** para esta rendición.")
+                if "multi_file_idx" not in st.session_state or st.session_state.multi_file_idx >= len(files_input):
+                    st.session_state.multi_file_idx = 0
+                sel_file_idx = st.selectbox(
+                    "Seleccionar comprobante a revisar / escanear:",
+                    range(len(files_input)),
+                    format_func=lambda i: f"📄 Comprobante {i+1} de {len(files_input)}: {files_input[i].name}",
+                    index=st.session_state.multi_file_idx,
+                    key="multi_file_selector"
+                )
+                st.session_state.multi_file_idx = sel_file_idx
+                active_file = files_input[sel_file_idx]
+                
+            final_image_bytes = active_file.getvalue()
+            final_mime_type = active_file.type # Dynamically get mime type
         if st.button("✨ Escanear con IA", type="primary", use_container_width=True):
             if configure_genai():
                 with st.status("🤖 Procesando comprobante...", expanded=True) as status:
