@@ -228,33 +228,40 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         """
         
         image_parts = [{"mime_type": mime_type, "data": image_bytes}]
-        
-        # ERROR HANDLING 429: Retry Logic with Exponential Backoff
-        import time
-        max_retries = 5
-        retry_delay = 4 # Starting delay in seconds
-        
-        for attempt in range(max_retries):
+        # MULTI-MODEL FALLBACK ENGINE (0s delay failover across 3 free Gemini models)
+        models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite"]
+        response = None
+        last_error = ""
+
+        # Phase 1: Try all free models instantly without delay
+        for m_name in models_to_try:
             try:
-                response = model.generate_content([prompt, image_parts[0]])
-                break # Success!
-            except Exception as e:
-                error_str = str(e)
-                if "429" in error_str or "ResourceExhausted" in error_str:
-                    if attempt < max_retries - 1:
-                        st.toast(f"⏳ Límite de carga excedido. Reintentando en {retry_delay}s... (Intento {attempt+1}/{max_retries})")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2 # Double the delay for next time
-                        continue
-                if "429" in error_str or "ResourceExhausted" in error_str:
-                    return "RATE_LIMIT: Se agoto el limite de escaneos por minuto. Espere 30 segundos y vuelva a intentar."
-                raise e # Re-raise if not 429 or unknown error
-        
-        if not response or not response.text:
-             # Check for safety blocks if text is empty
-             if response and response.candidates and response.candidates[0].finish_reason:
-                  return f"Error: La IA bloqueó la respuesta (Razón: {response.candidates[0].finish_reason})"
-             return "Error: La IA devolvió una respuesta vacía."
+                alt_model = genai.GenerativeModel(m_name)
+                response = alt_model.generate_content([prompt, image_parts[0]])
+                if response and response.text:
+                    break
+            except Exception as ex:
+                last_error = str(ex)
+                if "429" in last_error or "ResourceExhausted" in last_error:
+                    continue  # Failover instantly to next model!
+                raise ex
+
+        # Phase 2: If ALL models hit quota simultaneously, wait briefly and retry
+        if not response or not getattr(response, "text", None):
+            import time
+            for attempt in range(3):
+                time.sleep(2)
+                try:
+                    alt_model = genai.GenerativeModel("gemini-2.0-flash")
+                    response = alt_model.generate_content([prompt, image_parts[0]])
+                    if response and response.text:
+                        break
+                except Exception as ex:
+                    last_error = str(ex)
+        if not response or not getattr(response, "text", None):
+            if response and hasattr(response, "candidates") and response.candidates and response.candidates[0].finish_reason:
+                return f"Error: La IA bloqueó la respuesta (Razóón: {response.candidates[0].finish_reason})"
+            return "Error: La IA devolvió una respuesta vacía o superó el límite de cuota temporal."
              
         text = response.text
         
