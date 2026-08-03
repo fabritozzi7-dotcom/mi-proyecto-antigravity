@@ -22,7 +22,7 @@ _USUARIOS_FALLBACK = {
     "COMISIONISTA BS AS": "BUENOS AIRES",
     "BRENDA FERNANDEZ": "BUENOS AIRES",
     "CARLOS VALENZUELA": "BUENOS AIRES",
-    "DAVID REQUELME": "BUENOS AIRES",
+    "DAVID REQUELME": "ZARATE",
     "FABRICIO DAURIA": "BUENOS AIRES",
     "JORGE ANGEL": "BUENOS AIRES",
     "PABLO AACOSTA": "BUENOS AIRES",
@@ -715,9 +715,9 @@ def sync_data_from_sheets():
                 new_usuarios = {}
                 for row in rows_users[1:]:
                     if len(row) > max(idx_nombre, idx_oficina_u):
-                        nombre = str(row[idx_nombre]).strip().upper()
-                        oficina_u = str(row[idx_oficina_u]).strip().upper()
                         if nombre and oficina_u:
+                            if nombre == "DAVID REQUELME": oficina_u = "ZARATE"
+                            new_usuarios[nombre] = oficina_u
                             new_usuarios[nombre] = oficina_u
 
                 if new_usuarios:
