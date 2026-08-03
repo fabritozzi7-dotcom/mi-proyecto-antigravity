@@ -314,6 +314,7 @@ if st.session_state.get("post_save_prompt"):
                 st.session_state.multi_file_idx += 1
             st.session_state.needs_partial_reset = True
             st.session_state.post_save_prompt = False
+            st.rerun()
         if col_fin.button("✅ Finalizar rendición", use_container_width=True, key="btn_finish"):
             rend_id = st.session_state.rendicion_id
             n = len(st.session_state.comprobantes_guardados)
@@ -439,7 +440,6 @@ with st.container(border=True):
         placeholder="Detalles adicionales, número de guía, etc...",
         height=80, key="obs_input",
     )
-
     st.caption("💡 **Múltiples comprobantes:** Podés seleccionar varios archivos (PDFs/fotos) juntos. El sistema te permitirá procesar e imputar cada uno bajo la misma rendición.")
     st.subheader("📷 Comprobante (Opcional)")
     
@@ -479,17 +479,19 @@ with st.container(border=True):
                 active_file = files_input[sel_file_idx]
                 
             final_image_bytes = active_file.getvalue()
-            final_mime_type = active_file.type # Dynamically get mime type
+            final_mime_type = active_file.type
+
+    # SCAN BUTTON (Visible whenever there is a file from Camera OR Uploader)
+    if final_image_bytes:
         if st.button("✨ Escanear con IA", type="primary", use_container_width=True):
             if configure_genai():
-                with st.status("🤖 Procesando comprobante...", expanded=True) as status:
-                    st.write(f"Conectando con Gemini A ({final_mime_type})...")
+                with st.status("🔍 Procesando comprobante...", expanded=True) as status:
+                    st.write(f"Conectando con IA ({final_mime_type})...")
                     scan_result = scan_receipt(final_image_bytes, final_mime_type)
                     
                     if isinstance(scan_result, dict):
                         st.write("Analizando datos extraídos...")
                         st.session_state.scanned_data = scan_result
-                        # Initialize correction keys so they "stick"
                         st.session_state.scan_suc_input = str(scan_result.get("sucursal") or "").replace("-","")
                         st.session_state.scan_num_input = str(scan_result.get("numero_comprobante") or "").replace("-","")
                         st.session_state.scan_tipo_input = str(scan_result.get("tipo_factura") or "C").upper().strip()
@@ -506,13 +508,6 @@ with st.container(border=True):
                         status.update(label="❌ Error en el escaneo", state="error")
             else:
                 st.error("Error de configuración API Key")
-    
-    # --- MANUAL MODE (Discreet) ---
-    st.markdown("---")
-    modo_manual = st.checkbox("⌨️ Cargar sin comprobante / Corregir", value=False, help="Habilita la carga manual si no tienes un comprobante para escanear.")
-
-# --- VALIDATION RESULT SECTION ---
-
 # Defaults
 default_cuit = ""
 default_provider = ""
