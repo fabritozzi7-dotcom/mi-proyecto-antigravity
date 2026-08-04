@@ -228,12 +228,12 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         """
         
         image_parts = [{"mime_type": mime_type, "data": image_bytes}]
-        # MULTI-MODEL FALLBACK ENGINE (0s delay failover across 3 free Gemini models)
-        models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite"]
+        # MULTI-MODEL FALLBACK ENGINE (robust failover across free Gemini models)
+        models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro"]
         response = None
         last_error = ""
 
-        # Phase 1: Try all free models instantly without delay
+        # Phase 1: Try all models instantly
         for m_name in models_to_try:
             try:
                 alt_model = genai.GenerativeModel(m_name)
@@ -242,27 +242,21 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
                     break
             except Exception as ex:
                 last_error = str(ex)
-                if "429" in last_error or "ResourceExhausted" in last_error:
-                    continue  # Failover instantly to next model!
-                raise ex
+                continue
 
-        # Phase 2: If ALL models hit quota simultaneously, wait briefly and retry
+        # Phase 2: If no response, retry with gemini-1.5-flash after brief pause
         if not response or not getattr(response, "text", None):
             import time
-            for attempt in range(3):
-                time.sleep(2)
-                try:
-                    alt_model = genai.GenerativeModel("gemini-2.0-flash")
-                    response = alt_model.generate_content([prompt, image_parts[0]])
-                    if response and response.text:
-                        break
-                except Exception as ex:
-                    last_error = str(ex)
+            time.sleep(2)
+            try:
+                alt_model = genai.GenerativeModel("gemini-1.5-flash")
+                response = alt_model.generate_content([prompt, image_parts[0]])
+            except Exception as ex:
+                last_error = str(ex)
         if not response or not getattr(response, "text", None):
             if response and hasattr(response, "candidates") and response.candidates and response.candidates[0].finish_reason:
-                return f"Error: La IA bloqueó la respuesta (Razóón: {response.candidates[0].finish_reason})"
-            return "Error: La IA devolvió una respuesta vacía o superó el límite de cuota temporal."
-             
+                return f"Error: La IA bloqueó la respuesta (Razón: {response.candidates[0].finish_reason})"
+            return f"Error al consultar la IA: {last_error if last_error else 'No se pudo extraer texto del comprobante'}"
         text = response.text
         
         # Robust JSON extraction using Regex (Simple block finder compatible with Python 're')
@@ -519,11 +513,12 @@ monto_neto = 0.0
 monto_neto = 0.0
 
 # Logic: Show AI section if scanned AND (Successful OR Manual Mode is ON for correction)
-if "scanned_data" in st.session_state and final_image_bytes:
+# Logic: Show AI section if receipt present OR manual mode is ON
+if final_image_bytes or modo_manual:
     with st.container(border=True):
-        st.subheader("🔍 Datos del Ticket")
+        st.subheader("📋 Datos del Comprobante")
         
-        data_ia = st.session_state.scanned_data
+        data_ia = st.session_state.get("scanned_data", {})
         
         # --- PARSING AND RESTORING DEFAULTS ---
         default_cuit = str(data_ia.get("cuit") or "")
@@ -533,51 +528,45 @@ if "scanned_data" in st.session_state and final_image_bytes:
         default_num = str(data_ia.get("numero_comprobante") or "").replace("-","")
         default_afip = str(data_ia.get("codigo_afip") or "")
 
-        # New Auditor Fields — parse from flat JSON (new format) or nested desglose (legacy)
-        try:
-            monto_ticket_total = float(data_ia.get("monto_total") or data_ia.get("monto_total_columna_Z") or 0.0)
-            monto_neto = float(data_ia.get("neto_gravado") or 0.0)
-
-            # Build desglose from flat fields (new Gemini format)
-            if "neto_gravado" in data_ia and "desglose" not in data_ia:
-                # New format — build compatible desglose for backward compat
-                iibb_lista = data_ia.get("perc_iibb_lista") or []
-                perc_muni = data_ia.get("perc_municipal") or {}
-                desglose = {
-                    "neto_gravado_aux": monto_neto,
-                    "columna_R_no_gravado": float(data_ia.get("no_gravado") or 0),
-                    "columna_S_iva_21": float(data_ia.get("iva_21") or 0),
-                    "columna_T_iva_105": float(data_ia.get("iva_10_5") or 0),
-                    "columna_U_iva_27": float(data_ia.get("iva_27") or 0),
-                    "columna_V_perc_iva": float(data_ia.get("perc_iva") or 0),
-                    "columna_W_perc_ganancias": float(data_ia.get("perc_ganancias") or 0),
-                    "columna_X_perc_iibb": float(iibb_lista[0]["monto"]) if iibb_lista else 0,
-                    "columna_Y_jurisdiccion_code": iibb_lista[0].get("jurisdiccion", "") if iibb_lista else "",
-                    "monto_total_columna_Z": monto_ticket_total,
-                }
-                # Store extended perception data in session for the form
-                st.session_state.perc_iibb_lista = iibb_lista
-                st.session_state.perc_municipal = perc_muni
-            else:
-                # Legacy format
-                desglose = data_ia.get("desglose", {})
-                monto_neto = float(desglose.get("neto_gravado_aux") or 0.0)
-                st.session_state.perc_iibb_lista = []
-                st.session_state.perc_municipal = {}
-
-            st.session_state.desglose_data = desglose
-
-            # Validation Check
-            if data_ia.get("warning_total_no_cuadra"):
-                st.warning("⚠️ Alerta Auditoría: Los importes extraídos no suman el total del ticket.")
-            else:
-                val_check = data_ia.get("validacion_check", "N/A")
-                if val_check == "OK":
-                    st.info("✅ Auditoría: Suma de control OK")
-                elif val_check != "N/A":
-                    st.warning(f"⚠️ Alerta Auditoría: {val_check}")
-
-        except Exception as e:
+        # New Auditor Fields - parse from flat JSON (new format) or nested desglose (legacy)
+        monto_ticket_total = float(data_ia.get("monto_total") or data_ia.get("monto_total_columna_Z") or 0.0)
+        monto_neto = float(data_ia.get("neto_gravado") or 0.0)
+        # Build desglose from flat fields (new Gemini format)
+        if "neto_gravado" in data_ia and "desglose" not in data_ia:
+            # New format - build compatible desglose for backward compat
+            iibb_lista = data_ia.get("perc_iibb_lista") or []
+            perc_muni = data_ia.get("perc_municipal") or {}
+            desglose = {
+                "neto_gravado_aux": monto_neto,
+                "columna_R_no_gravado": float(data_ia.get("no_gravado") or 0),
+                "columna_S_iva_21": float(data_ia.get("iva_21") or 0),
+                "columna_T_iva_105": float(data_ia.get("iva_10_5") or 0),
+                "columna_U_iva_27": float(data_ia.get("iva_27") or 0),
+                "columna_V_perc_iva": float(data_ia.get("perc_iva") or 0),
+                "columna_W_perc_ganancias": float(data_ia.get("perc_ganancias") or 0),
+                "columna_X_perc_iibb": float(iibb_lista[0]["monto"]) if iibb_lista else 0,
+                "columna_Y_jurisdiccion_code": iibb_lista[0].get("jurisdiccion", "") if iibb_lista else "",
+                "monto_total_columna_Z": monto_ticket_total,
+            }
+            # Store extended perception data in session for the form
+            st.session_state.perc_iibb_lista = iibb_lista
+            st.session_state.perc_municipal = perc_muni
+        else:
+            # Legacy format
+            desglose = data_ia.get("desglose", {})
+            monto_neto = float(desglose.get("neto_gravado_aux") or 0.0)
+            st.session_state.perc_iibb_lista = []
+            st.session_state.perc_municipal = {}
+        st.session_state.desglose_data = desglose
+        # Validation Check
+        if data_ia.get("warning_total_no_cuadra"):
+            st.warning("⚠️ Alerta Auditoría: Los importes extraídos no suman el total del ticket.")
+        else:
+            val_check = data_ia.get("validacion_check", "N/A")
+            if val_check == "OK":
+                st.info("✅ Auditoría: Suma de control OK")
+            elif val_check != "N/A":
+                st.warning(f"⚠️ Alerta Auditoría: {val_check}")
             st.error(f"Error parsing AI data: {e}")
             monto_ticket_total = 0.0
             monto_neto = 0.0
