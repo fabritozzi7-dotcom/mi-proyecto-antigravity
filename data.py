@@ -77,19 +77,23 @@ CONCEPTOS_OFICINA_DB = {}
 CONCEPTOS_MONTO_POR_OFICINA = {}
 
 
-def get_monto_sugerido(concepto, oficina):
-    """Look up monto sugerido by (concepto, oficina) with fallback.
+def _oficinas_coinciden(ofi1, ofi2):
+    if not ofi1 or not ofi2:
+        return False
+    o1 = str(ofi1).upper().strip().replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ó", "O").replace("Ú", "U")
+    o2 = str(ofi2).upper().strip().replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ó", "O").replace("Ú", "U")
+    if o1 == o2:
+        return True
+    if ("ZARATE" in o1 or "CAMPANA" in o1) and ("ZARATE" in o2 or "CAMPANA" in o2):
+        return True
+    return False
 
-    Priority:
-    1. Exact match (concepto, oficina)
-    2. Generic match (concepto, "Todas")
-    3. Any entry for this concepto (first found)
-    4. 0.0
-    """
-    # Exact match
-    monto = CONCEPTOS_MONTO_POR_OFICINA.get((concepto, oficina))
-    if monto is not None:
-        return monto
+def get_monto_sugerido(concepto, oficina):
+    """Look up monto sugerido by (concepto, oficina) with fallback."""
+    # Match by concept and matching office
+    for (c, o), m in CONCEPTOS_MONTO_POR_OFICINA.items():
+        if c == concepto and _oficinas_coinciden(o, oficina):
+            return m
     # Generic "Todas"
     monto = CONCEPTOS_MONTO_POR_OFICINA.get((concepto, "Todas"))
     if monto is not None:
@@ -100,15 +104,13 @@ def get_monto_sugerido(concepto, oficina):
             return m
     return 0.0
 
-
 def get_conceptos_para_oficina(oficina):
     """Returns sorted list of concept names available for an office."""
     result = set()
     for (conc, ofi) in CONCEPTOS_MONTO_POR_OFICINA:
-        if ofi in ("Todas", "---") or ofi == oficina or not oficina:
+        if ofi in ("Todas", "---") or _oficinas_coinciden(ofi, oficina) or not oficina:
             result.add(conc)
     return sorted(result)
-
 # Providers DB (Partial/Fallback)
 # In production, this can be huge. We try to load from providers.txt first.
 PROVEEDORES_DB = {}
@@ -714,9 +716,7 @@ def sync_data_from_sheets():
 
                 new_usuarios = {}
                 for row in rows_users[1:]:
-                    if len(row) > max(idx_nombre, idx_oficina_u):
                         if nombre and oficina_u:
-                            if nombre == "DAVID REQUELME": oficina_u = "ZARATE"
                             new_usuarios[nombre] = oficina_u
                             new_usuarios[nombre] = oficina_u
 
