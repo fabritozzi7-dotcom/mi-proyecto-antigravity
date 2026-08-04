@@ -508,10 +508,14 @@ with st.container(border=True):
                         status.update(label="❌ Error en el escaneo", state="error")
             else:
                 st.error("Error de configuración API Key")
-# Defaults
-default_cuit = ""
-default_provider = ""
-default_afip = ""
+
+    # --- MANUAL MODE (Discreet) ---
+    st.markdown("---")
+    modo_manual = st.checkbox(
+        "🔑 Cargar sin comprobante / Corregir", 
+        value=False, 
+        help="Habilita la carga manual si no tienes un comprobante para escanear."
+    )
 monto_ticket_total = 0.0  # What AI sees on the paper
 monto_neto = 0.0
 
