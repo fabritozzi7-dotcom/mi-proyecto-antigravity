@@ -302,7 +302,7 @@ if st.session_state.get("post_save_prompt"):
                 f"({last['numero']}){estado_badge}"
             )
         st.markdown("¿Agregar otro comprobante a esta rendición o finalizar?")
-
+        col_add, col_fin = st.columns(2)
         if col_add.button("➕ Agregar otro comprobante", type="primary", use_container_width=True, key="btn_add_more"):
             if "multi_file_idx" in st.session_state:
                 st.session_state.multi_file_idx += 1
@@ -331,6 +331,7 @@ if rendicion_en_curso:
         )
         with st.expander(f"Ver comprobantes ({n})"):
             for idx, c in enumerate(st.session_state.comprobantes_guardados, 1):
+                estado_badge = f" _{c['estado']}_" if c.get("estado") else ""
                 st.markdown(
                     f"{idx}. **{c['concepto']}** - ${c['monto']:,.2f} "
                     f"({c['numero']}){estado_badge}"
@@ -508,12 +509,10 @@ with st.container(border=True):
         help="Habilita la carga manual si no tienes un comprobante para escanear."
     )
 monto_ticket_total = 0.0  # What AI sees on the paper
+monto_ticket_total = 0.0
 monto_neto = 0.0
 
-monto_neto = 0.0
-
-# Logic: Show AI section if scanned AND (Successful OR Manual Mode is ON for correction)
-# Logic: Show AI section if receipt present OR manual mode is ON
+# Logic: Show receipt data section if image present OR manual mode is ON
 if final_image_bytes or modo_manual:
     with st.container(border=True):
         st.subheader("📋 Datos del Comprobante")
@@ -567,14 +566,11 @@ if final_image_bytes or modo_manual:
                 st.info("✅ Auditoría: Suma de control OK")
             elif val_check != "N/A":
                 st.warning(f"⚠️ Alerta Auditoría: {val_check}")
-            st.error(f"Error parsing AI data: {e}")
-            monto_ticket_total = 0.0
-            monto_neto = 0.0
-            
+
         # Factura A Rule: Use Net Amount for Imputation Base
         if default_tipo == "A" and monto_neto > 0:
             base_imputacion = monto_neto
-            st.info(f"ℹ️ Factura A detectada: Base de imputación sugerida ${monto_neto:,.2f} (Neto)")
+            st.info(f"📋 Factura A detectada: Base de imputación sugerida ${monto_neto:,.2f} (Neto)")
         else:
             base_imputacion = monto_ticket_total
 
