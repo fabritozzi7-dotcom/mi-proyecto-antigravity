@@ -362,7 +362,7 @@ with st.container(border=True):
             key="rend_usuario", disabled=rendicion_en_curso,
         )
 
-    # Office logic
+        office = data.USUARIOS_DB.get(selected_user) or data._USUARIOS_FALLBACK.get(selected_user, "---")
     office = ""
     if selected_user:
         office = data.USUARIOS_DB.get(selected_user, "---")

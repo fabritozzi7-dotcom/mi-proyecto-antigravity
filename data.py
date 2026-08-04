@@ -713,13 +713,13 @@ def sync_data_from_sheets():
                     idx_oficina_u = headers_u.index("oficina")
                 except ValueError:
                     idx_oficina_u = 2
-
                 new_usuarios = {}
                 for row in rows_users[1:]:
+                    if len(row) > max(idx_nombre, idx_oficina_u):
+                        nombre = str(row[idx_nombre]).strip().upper()
+                        oficina_u = str(row[idx_oficina_u]).strip().upper()
                         if nombre and oficina_u:
                             new_usuarios[nombre] = oficina_u
-                            new_usuarios[nombre] = oficina_u
-
                 if new_usuarios:
                     global USUARIOS_DB
                     USUARIOS_DB.clear()
