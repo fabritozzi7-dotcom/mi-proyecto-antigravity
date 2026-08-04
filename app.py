@@ -337,12 +337,10 @@ if rendicion_en_curso:
         )
         with st.expander(f"Ver comprobantes ({n})"):
             for idx, c in enumerate(st.session_state.comprobantes_guardados, 1):
-                estado_badge = f" _{c['estado']}_" if c.get("estado") else ""
                 st.markdown(
-                    f"{idx}. **{c['concepto']}** — ${c['monto']:,.2f} "
+                    f"{idx}. **{c['concepto']}** - ${c['monto']:,.2f} "
                     f"({c['numero']}){estado_badge}"
                 )
-
 
 # --- CARD 1: DATOS DE LA RENDICIÓN (compartidos por todos los comprobantes) ---
 with st.container(border=True):
@@ -361,13 +359,12 @@ with st.container(border=True):
             "Usuario", users_list, index=None, placeholder="Seleccionar...",
             key="rend_usuario", disabled=rendicion_en_curso,
         )
-
-        office = data.USUARIOS_DB.get(selected_user) or data._USUARIOS_FALLBACK.get(selected_user, "---")
+    # Office logic
     office = ""
     if selected_user:
-        office = data.USUARIOS_DB.get(selected_user, "---")
+        office = data.USUARIOS_DB.get(selected_user) or data._USUARIOS_FALLBACK.get(selected_user, "")
 
-    st.text_input("Oficina", value=office, disabled=True, key="rend_oficina_display")
+    st.text_input("Oficina", value=office, disabled=True)
 
     # Folder Number compartido por toda la rendición. Soporta multi-carpeta separadas por coma.
     folder_number = st.text_input(
