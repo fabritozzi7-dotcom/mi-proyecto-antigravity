@@ -229,7 +229,7 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
         
         image_parts = [{"mime_type": mime_type, "data": image_bytes}]
         # MULTI-MODEL FALLBACK ENGINE (robust failover across free Gemini models)
-        models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro"]
+        models_to_try = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.0-flash-lite"]
         response = None
         last_error = ""
 
@@ -244,12 +244,12 @@ def scan_receipt(image_bytes, mime_type="image/jpeg"):
                 last_error = str(ex)
                 continue
 
-        # Phase 2: If no response, retry with gemini-1.5-flash after brief pause
+        # Phase 2: If no response, retry with gemini-2.5-flash after brief pause
         if not response or not getattr(response, "text", None):
             import time
             time.sleep(2)
             try:
-                alt_model = genai.GenerativeModel("gemini-1.5-flash")
+                alt_model = genai.GenerativeModel("gemini-2.5-flash")
                 response = alt_model.generate_content([prompt, image_parts[0]])
             except Exception as ex:
                 last_error = str(ex)
