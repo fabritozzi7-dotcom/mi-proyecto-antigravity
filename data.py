@@ -781,7 +781,7 @@ def sync_data_from_sheets():
         logger.error(f"GSheets Sync Error: {err_msg}")
         return False, err_msg
 # Drive configuration constants
-DRIVE_FOLDER_ID_CONST = "1y5W...PASTE_ID_HERE" # User should replace this or set env var
+DRIVE_FOLDER_ID_CONST = "1lSTD0_VtSYodp12Q-ojFjjNKMR25zPEl"
 from google.oauth2.credentials import Credentials as UserCredentials
 
 def get_drive_creds():
