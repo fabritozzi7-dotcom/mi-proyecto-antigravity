@@ -105,13 +105,15 @@ if st.session_state.get("needs_partial_reset"):
     _clear_keys(_PER_COMPROBANTE_KEYS)
     st.session_state.uploader_key += 1
     st.session_state.needs_partial_reset = False
-
 if st.session_state.get("needs_full_reset"):
     # Limpia TODO: cierra la rendición en curso y vuelve al estado inicial
     _clear_keys(_PER_COMPROBANTE_KEYS + _PER_RENDICION_KEYS)
     st.session_state.uploader_key += 1
     st.session_state.rendicion_id = ""
     st.session_state.comprobantes_guardados = []
+    for k in ["rend_usuario_saved", "rend_op_type_saved", "rend_cliente_saved"]:
+        if k in st.session_state:
+            del st.session_state[k]
     st.session_state.needs_full_reset = False
 
 def configure_genai():
@@ -318,15 +320,17 @@ if st.session_state.get("post_save_prompt"):
             st.rerun()
     st.stop()
 
-
 # --- BANNER: rendición en curso (cuando hay >=1 comprobante ya guardado) ---
 rendicion_en_curso = bool(st.session_state.comprobantes_guardados)
 if rendicion_en_curso:
     n = len(st.session_state.comprobantes_guardados)
+    usr_banner = st.session_state.get("rend_usuario_saved") or st.session_state.get("rend_usuario") or ""
+    usr_info = f" — Usuario: **{usr_banner}**" if usr_banner else ""
+    plural = "s" if n != 1 else ""
     with st.container(border=True):
         st.markdown(
-            f"🧾 **Rendición en curso:** `{st.session_state.rendicion_id}` — "
-            f"{n} comprobante{'s' if n != 1 else ''} cargado{'s' if n != 1 else ''}. "
+            f"📄 **Rendición en curso:** `{st.session_state.rendicion_id}`{usr_info} - "
+            f"{n} comprobante{plural} cargado{plural}. "
             f"Datos del operador y carpeta bloqueados hasta finalizar."
         )
         with st.expander(f"Ver comprobantes ({n})"):
@@ -350,10 +354,15 @@ with st.container(border=True):
 
     with col_op2:
         users_list = sorted(list(data.USUARIOS_DB.keys()))
+        saved_user = st.session_state.get("rend_usuario_saved") or st.session_state.get("rend_usuario")
+        user_idx = users_list.index(saved_user) if saved_user in users_list else None
         selected_user = st.selectbox(
-            "Usuario", users_list, index=None, placeholder="Seleccionar...",
+            "Usuario", users_list, index=user_idx, placeholder="Seleccionar...",
             key="rend_usuario", disabled=rendicion_en_curso,
         )
+        if selected_user:
+            st.session_state["rend_usuario_saved"] = selected_user
+
     # Office logic
     office = ""
     if selected_user:
@@ -363,29 +372,31 @@ with st.container(border=True):
 
     # Folder Number compartido por toda la rendición. Soporta multi-carpeta separadas por coma.
     folder_number = st.text_input(
-        "📂 Número de Carpeta (Segun concepto)",
+        "📁 Número de Carpeta (Segun concepto)",
         placeholder="Ej: IMP-2024-001, EXP-2024-050 (Separar con coma para prorrateo). No aplica para Gastos de Representacion.",
         key="folder_input", disabled=rendicion_en_curso,
     )
 
     c1, c2 = st.columns(2)
     with c1:
+        saved_op = st.session_state.get("rend_op_type_saved") or st.session_state.get("rend_op_type")
+        op_idx = data.OPERACIONES_DB.index(saved_op) if saved_op in data.OPERACIONES_DB else 0
         op_type = st.selectbox(
-            "Tipo de Operación", data.OPERACIONES_DB,
+            "Tipo de Operación", data.OPERACIONES_DB, index=op_idx,
             key="rend_op_type", disabled=rendicion_en_curso,
         )
+        if op_type:
+            st.session_state["rend_op_type_saved"] = op_type
+
     with c2:
+        saved_cli = st.session_state.get("rend_cliente_saved") or st.session_state.get("rend_cliente")
+        cli_idx = data.CLIENTES_DB.index(saved_cli) if saved_cli in data.CLIENTES_DB else None
         client = st.selectbox(
-            "Cliente", data.CLIENTES_DB, index=None, placeholder="Buscar Cliente...",
+            "Cliente", data.CLIENTES_DB, index=cli_idx, placeholder="Buscar Cliente...",
             key="rend_cliente", disabled=rendicion_en_curso,
         )
-
-
-# --- CARD 2: IMPUTACIÓN DEL COMPROBANTE (cambia por cada comprobante) ---
-with st.container(border=True):
-    st.subheader("📝 Imputación del comprobante")
-
-    st.markdown("### Concepto")
+        if client:
+            st.session_state["rend_cliente_saved"] = client
     if office:
         concepts_list = data.get_conceptos_para_oficina(office)
         st.caption(f"🔍 Mostrando {len(concepts_list)} conceptos para oficina: **{office}**")
