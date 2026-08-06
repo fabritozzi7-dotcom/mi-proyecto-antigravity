@@ -1229,6 +1229,17 @@ with st.expander("⚙️ Administración (Exportación Dux)", expanded=False):
                 else:
                     st.error(f"❌ {msg}")
 
+        st.markdown("---")
+        st.subheader("📁 Mantenimiento de Drive")
+        st.caption("Si hay comprobantes anteriores que no se pueden abrir o descargar, hace clic abajo para reparar sus permisos y moverlos a la carpeta compartida.")
+        if st.button("🔄 Reparar permisos y mover comprobantes anteriores a Drive", key="btn_repair_drive", use_container_width=True):
+            with st.spinner("Procesando comprobantes en Google Drive..."):
+                ok, msg, cant = data.reparar_permisos_y_mover_drive()
+                if ok:
+                    st.success(f"✅ {msg}")
+                else:
+                    st.error(f"❌ {msg}")
+
         # ==========================================
         # REVISIÓN DE EXCESOS
         # ==========================================

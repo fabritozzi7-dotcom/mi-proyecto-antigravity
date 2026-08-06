@@ -833,7 +833,19 @@ def upload_receipt_to_drive(file_bytes, file_name, mime_type):
         media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type)
         
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-        return file.get('webViewLink'), file.get('id'), None
+        file_id = file.get('id')
+
+        if file_id:
+            try:
+                service.permissions().create(
+                    fileId=file_id,
+                    body={'type': 'anyone', 'role': 'reader'},
+                    fields='id'
+                ).execute()
+            except Exception as perm_err:
+                logger.warning(f"No se pudo asignar permiso al ticket {file_id}: {perm_err}")
+
+        return file.get('webViewLink'), file_id, None
     except Exception as e:
         logger.error(f"Drive Upload Error: {e}")
         return None, None, str(e)
@@ -1842,3 +1854,80 @@ def escribir_export_dux_en_sheet(fecha_desde=None, fecha_hasta=None,
         err_detail = traceback.format_exc()
         logger.error(f"Dux export error: {err_detail}")
         return False, f"Error: {str(e)}\n\nDetalle:\n{err_detail}", 0
+
+
+
+def reparar_permisos_y_mover_drive():
+    """
+    Recorre las URLs de los comprobantes en RENDICIONES_LOG,
+    mueve los archivos a la carpeta compartida y les otorga permisos de lectura.
+    """
+    try:
+        creds = get_drive_creds()
+        if not creds:
+            return False, "No se pudieron obtener credenciales de Drive.", 0
+
+        service = build('drive', 'v3', credentials=creds)
+        folder_id = os.getenv("DRIVE_FOLDER_ID", DRIVE_FOLDER_ID_CONST)
+
+        client, email = get_gsheets_client()
+        if not client:
+            return False, "No se pudo conectar a Google Sheets.", 0
+
+        sheet_id = os.getenv("GSHEET_ID", "1adKknt6Y2hMPNlrBvEqATrYHpgLHQl3qdL2iPnPjBlU")
+        sh = client.open_by_key(sheet_id)
+        ws = sh.worksheet("RENDICIONES_LOG")
+        all_rows = ws.get_all_values()
+
+        if not all_rows or len(all_rows) <= 1:
+            return True, "No hay comprobantes cargados en el log.", 0
+
+        file_ids = set()
+        import re
+        for row in all_rows[1:]:
+            if len(row) > 27 and row[27] and "drive.google.com" in row[27]:
+                m = re.search(r'/d/([a-zA-Z0-9_-]+)', row[27])
+                if m:
+                    file_ids.add(m.group(1))
+
+        if not file_ids:
+            return True, "No se encontraron URLs de tickets en la planilla.", 0
+
+        procesados = 0
+        errores = 0
+
+        for fid in file_ids:
+            try:
+                try:
+                    service.permissions().create(
+                        fileId=fid,
+                        body={'type': 'anyone', 'role': 'reader'},
+                        fields='id'
+                    ).execute()
+                except Exception:
+                    pass
+
+                if folder_id and "PASTE" not in folder_id:
+                    try:
+                        f = service.files().get(fileId=fid, fields='parents').execute()
+                        parents = f.get('parents', [])
+                        if folder_id not in parents:
+                            old_parents = ','.join(parents) if parents else 'root'
+                            service.files().update(
+                                fileId=fid,
+                                addParents=folder_id,
+                                removeParents=old_parents,
+                                fields='id, parents'
+                            ).execute()
+                    except Exception:
+                        pass
+
+                procesados += 1
+            except Exception as e:
+                logger.warning(f"Error procesando comprobante {fid}: {e}")
+                errores += 1
+
+        return True, f"Se procesaron {procesados} comprobantes ({errores} errores).", procesados
+    except Exception as e:
+        logger.error(f"Error en reparar_permisos_y_mover_drive: {e}")
+        return False, str(e), 0
