@@ -116,20 +116,23 @@ DUX_HEADERS = [
     "Importe",         # L
     "Detalle",         # M
     "idEmpleado",      # N
-    "netoGravado",     # O
-    "noGravado",       # P
-    "exento",          # Q
-    "iva21",           # R
-    "iva10",           # S
-    "iva27",           # T
-    "iibb importe 1",  # U
-    "iibb provincia 1",# V
-    "iibb importe 2",  # W
-    "iibb provincia 2",# X
-    "iibb importe 3",  # Y
-    "iibb provincia 3",# Z
-    "percepcion iva",  # AA
-    "percepcion ganancias",  # AB
+    "tipo cambio",     # O
+    "neto 21",         # P
+    "neto 10.5",       # Q
+    "neto 27",         # R
+    "noGravado",       # S
+    "exento",          # T
+    "iva21",           # U
+    "iva10",           # V
+    "iva27",           # W
+    "iibb importe 1",  # X
+    "iibb provincia 1",# Y
+    "iibb importe 2",  # Z
+    "iibb provincia 2",# AA
+    "iibb importe 3",  # AB
+    "iibb provincia 3",# AC
+    "percepcion iva",  # AD
+    "percepcion ganancias",  # AE
 ]
 
 
@@ -334,24 +337,48 @@ def _construir_enc(grupo, tipo_factura_dux, total_importe, desglose_sumado):
     if not is_propia and not cuit_proveedor:
         fila[12] = "CONSUMIDOR FINAL"
 
-    # O-AB: Desglose fiscal (solo PROPIA)
+    # O-AE: Desglose fiscal (solo PROPIA)
     if is_propia:
-        fila[14] = round(desglose_sumado["neto_gravado"], 2)       # O
-        fila[15] = round(desglose_sumado["no_gravado"], 2)         # P
-        fila[16] = round(desglose_sumado["exento"], 2)             # Q
-        fila[17] = round(desglose_sumado["iva_21"], 2)             # R
-        fila[18] = round(desglose_sumado["iva_105"], 2)            # S
-        fila[19] = round(desglose_sumado["iva_27"], 2)             # T
+        neto_total = desglose_sumado.get("neto_gravado", 0.0)
+        iva_21 = desglose_sumado.get("iva_21", 0.0)
+        iva_105 = desglose_sumado.get("iva_105", 0.0)
+        iva_27 = desglose_sumado.get("iva_27", 0.0)
+        
+        n21 = n105 = n27 = 0.0
+        
+        if iva_105 > 0 and iva_21 == 0 and iva_27 == 0:
+            n105 = neto_total
+        elif iva_27 > 0 and iva_21 == 0 and iva_105 == 0:
+            n27 = neto_total
+        elif iva_21 > 0 and iva_105 == 0 and iva_27 == 0:
+            n21 = neto_total
+        else:
+            if iva_21 == 0 and iva_105 == 0 and iva_27 == 0:
+                n21 = neto_total
+            else:
+                n21 = round(iva_21 / 0.21, 2) if iva_21 > 0 else 0.0
+                n105 = round(iva_105 / 0.105, 2) if iva_105 > 0 else 0.0
+                n27 = round(iva_27 / 0.27, 2) if iva_27 > 0 else 0.0
+
+        fila[14] = ""                                              # O: tipo cambio
+        fila[15] = round(n21, 2)                                   # P: neto 21
+        fila[16] = round(n105, 2)                                  # Q: neto 10.5
+        fila[17] = round(n27, 2)                                   # R: neto 27
+        fila[18] = round(desglose_sumado["no_gravado"], 2)         # S
+        fila[19] = round(desglose_sumado["exento"], 2)             # T
+        fila[20] = round(desglose_sumado["iva_21"], 2)             # U
+        fila[21] = round(desglose_sumado["iva_105"], 2)            # V
+        fila[22] = round(desglose_sumado["iva_27"], 2)             # W
 
         # IIBB: hasta 3 jurisdicciones con importe
         iibb_list = desglose_sumado.get("iibb", [])
         for slot_idx, iibb_entry in enumerate(iibb_list[:3]):
-            base_col = 20 + slot_idx * 2  # U/W/Y = 20/22/24
+            base_col = 23 + slot_idx * 2  # X/Z/AB = 23/25/27
             fila[base_col] = round(iibb_entry["importe"], 2)
             fila[base_col + 1] = iibb_entry["provincia"]
 
-        fila[26] = round(desglose_sumado["perc_iva"], 2)          # AA
-        fila[27] = round(desglose_sumado["perc_ganancias"], 2)    # AB
+        fila[29] = round(desglose_sumado["perc_iva"], 2)          # AD
+        fila[30] = round(desglose_sumado["perc_ganancias"], 2)    # AE
 
     return fila
 
@@ -867,12 +894,9 @@ if __name__ == "__main__":
     f1 = generar_filas_dux(g1, CUITS_PROPIOS, mock_concepto_fn, mock_empleado_fn)
     enc1 = [r for r in f1 if r[0] == "ENC"][0]
     check("ENC is TERCEROS", enc1[1] == "TERCEROS", enc1[1])
-    check("IIBB slot 1 empty", enc1[20] == "" and enc1[21] == "",
-          f"U={enc1[20]} V={enc1[21]}")
-    check("IIBB slot 2 empty", enc1[22] == "" and enc1[23] == "",
-          f"W={enc1[22]} X={enc1[23]}")
-    check("IIBB slot 3 empty", enc1[24] == "" and enc1[25] == "",
-          f"Y={enc1[24]} Z={enc1[25]}")
+    check("IIBB slot 1 empty", enc1[23] == "" and enc1[24] == "", f"X={enc1[23]} Y={enc1[24]}")
+    check("IIBB slot 2 empty", enc1[25] == "" and enc1[26] == "", f"Z={enc1[25]} AA={enc1[26]}")
+    check("IIBB slot 3 empty", enc1[27] == "" and enc1[28] == "", f"AB={enc1[27]} AC={enc1[28]}")
 
     # ── Test 2: PROPIA con 1 jurisdiccion IIBB (CABA) ───────────────
     print("\n=== Test 2: PROPIA con 1 IIBB CABA ===")
@@ -899,12 +923,9 @@ if __name__ == "__main__":
     f2 = generar_filas_dux(g2, CUITS_PROPIOS, mock_concepto_fn, mock_empleado_fn)
     enc2 = [r for r in f2 if r[0] == "ENC"][0]
     check("ENC is PROPIA", enc2[1] == "PROPIA")
-    check("IIBB slot 1 = (1000, CABA)", enc2[20] == 1000.0 and enc2[21] == "CABA",
-          f"U={enc2[20]} V={enc2[21]}")
-    check("IIBB slot 2 empty", enc2[22] == "" and enc2[23] == "",
-          f"W={enc2[22]} X={enc2[23]}")
-    check("IIBB slot 3 empty", enc2[24] == "" and enc2[25] == "",
-          f"Y={enc2[24]} Z={enc2[25]}")
+    check("IIBB slot 1 = (1000, CABA)", enc2[23] == 1000.0 and enc2[24] == "CABA", f"X={enc2[23]} Y={enc2[24]}")
+    check("IIBB slot 2 empty", enc2[25] == "" and enc2[26] == "", f"Z={enc2[25]} AA={enc2[26]}")
+    check("IIBB slot 3 empty", enc2[27] == "" and enc2[28] == "", f"AB={enc2[27]} AC={enc2[28]}")
 
     # ���─ Test 3: PROPIA con 2 IIBB (CABA + CORDOBA) ──────���───────────
     print("\n=== Test 3: PROPIA con 2 IIBB (CABA + CORDOBA) ===")
@@ -932,12 +953,9 @@ if __name__ == "__main__":
     enc3 = [r for r in f3 if r[0] == "ENC"][0]
     check("ENC is PROPIA", enc3[1] == "PROPIA")
     # Sorted: CABA < CORDOBA
-    check("IIBB slot 1 = (4938, CABA)", enc3[20] == 4938.0 and enc3[21] == "CABA",
-          f"U={enc3[20]} V={enc3[21]}")
-    check("IIBB slot 2 = (4938, CORDOBA)", enc3[22] == 4938.0 and enc3[23] == "CORDOBA",
-          f"W={enc3[22]} X={enc3[23]}")
-    check("IIBB slot 3 empty", enc3[24] == "" and enc3[25] == "",
-          f"Y={enc3[24]} Z={enc3[25]}")
+    check("IIBB slot 1 = (4938, CABA)", enc3[23] == 4938.0 and enc3[24] == "CABA", f"X={enc3[23]} Y={enc3[24]}")
+    check("IIBB slot 2 = (4938, CORDOBA)", enc3[25] == 4938.0 and enc3[26] == "CORDOBA", f"Z={enc3[25]} AA={enc3[26]}")
+    check("IIBB slot 3 empty", enc3[27] == "" and enc3[28] == "", f"AB={enc3[27]} AC={enc3[28]}")
 
     # Validation should warn (not error) about CORDOBA
     errs3, warns3 = validar_rendiciones_para_export(t3, mock_concepto_fn, mock_empleado_fn, CUITS_PROPIOS)
@@ -975,18 +993,13 @@ if __name__ == "__main__":
     # Municipal CORDOBA ($2963.10) goes to No Gravado (confirmed by Fabian 04/05)
     # IIBB: CABA $4938.50 + CORDOBA $4938.50 (only actual IIBB)
     # Sorted: CABA < CORDOBA
-    check("IIBB slot 1 = CABA $4938.50",
-          enc4[21] == "CABA" and abs(enc4[20] - 4938.50) < 0.01,
-          f"U={enc4[20]} V={enc4[21]}")
-    check("IIBB slot 2 = CORDOBA $4938.50 (solo IIBB, sin Municipal)",
-          enc4[23] == "CORDOBA" and abs(enc4[22] - 4938.50) < 0.01,
-          f"W={enc4[22]} X={enc4[23]}")
-    check("IIBB slot 3 empty", enc4[24] == "" and enc4[25] == "",
-          f"Y={enc4[24]} Z={enc4[25]}")
+    check("IIBB slot 1 = CABA $4938.50", enc4[24] == "CABA" and abs(enc4[23] - 4938.50) < 0.01, f"X={enc4[23]} Y={enc4[24]}")
+    check("IIBB slot 2 = CORDOBA $4938.50 (solo IIBB, sin Municipal)", enc4[26] == "CORDOBA" and abs(enc4[25] - 4938.50) < 0.01, f"Z={enc4[25]} AA={enc4[26]}")
+    check("IIBB slot 3 empty", enc4[27] == "" and enc4[28] == "", f"AB={enc4[27]} AC={enc4[28]}")
     # No Gravado should include the municipal perception
     check("No Gravado includes Municipal $2963.10",
-          abs(enc4[15] - 2963.10) < 0.01,
-          f"P(noGravado)={enc4[15]}")
+          abs(enc4[18] - 2963.10) < 0.01,
+          f"P(noGravado)={enc4[18]}")
 
     # ── Test 5: Sumatoria Easy ───────────────────────────────────────
     print("\n=== Test 5: Sumatoria Easy = total ticket ===")
@@ -994,14 +1007,14 @@ if __name__ == "__main__":
     # = 179308.97 + 0 + 37654.88 + 0 + 0 + (4938.50 + 4938.50 + 2963.10)
     # = 179308.97 + 37654.88 + 12840.10 = 229803.95
     total_ticket = 229803.95
-    neto = enc4[14]       # O: netoGravado
-    no_grav = enc4[15]    # P: noGravado
-    iva21 = enc4[17]      # R: iva21
-    iva105 = enc4[18]     # S: iva10
-    iva27 = enc4[19]      # T: iva27
-    perc_iva = enc4[26]   # AA: percepcion iva
-    perc_gan = enc4[27]   # AB: percepcion ganancias
-    iibb_total = sum(enc4[20 + i*2] for i in range(3)
+    neto = enc4[15]       # O: netoGravado
+    no_grav = enc4[18]    # P: noGravado
+    iva21 = enc4[20]      # R: iva21
+    iva105 = enc4[21]     # S: iva10
+    iva27 = enc4[22]      # T: iva27
+    perc_iva = enc4[29]   # AA: percepcion iva
+    perc_gan = enc4[30]   # AB: percepcion ganancias
+    iibb_total = sum(enc4[23 + i*2] for i in range(3)
                      if isinstance(enc4[20 + i*2], (int, float)))
 
     suma = neto + no_grav + iva21 + iva105 + iva27 + perc_iva + perc_gan + iibb_total

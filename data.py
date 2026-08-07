@@ -1818,7 +1818,7 @@ def escribir_export_dux_en_sheet(fecha_desde=None, fecha_hasta=None,
             ws_export.clear()
             logger.info("Dux export: Hoja EXPORT_DUX encontrada y limpiada")
         else:
-            ws_export = sh.add_worksheet(title="EXPORT_DUX", rows=1000, cols=28)
+            ws_export = sh.add_worksheet(title="EXPORT_DUX", rows=1000, cols=31)
             logger.info("Dux export: Hoja EXPORT_DUX creada (1000 filas x 28 cols)")
 
         # 6. Asegurar que la hoja tenga suficientes filas
