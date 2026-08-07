@@ -531,7 +531,8 @@ if final_image_bytes or modo_manual:
         data_ia = st.session_state.get("scanned_data", {})
         
         # --- PARSING AND RESTORING DEFAULTS ---
-        default_cuit = str(data_ia.get("cuit") or "")
+        default_cuit = str(data_ia.get("cuit_proveedor") or data_ia.get("cuit") or "")
+        default_cuit_cliente = str(data_ia.get("cuit_cliente") or "")
         default_provider = str(data_ia.get("proveedor") or "")
         default_tipo = str(data_ia.get("tipo_factura") or "C").upper().strip()
         default_suc = str(data_ia.get("sucursal") or "").replace("-","")
@@ -593,13 +594,34 @@ if final_image_bytes or modo_manual:
         if "scan_provider_input" not in st.session_state: st.session_state.scan_provider_input = default_provider
 
         # --- KEY METRICS (Always visible if scanned) ---
-        c1, c2 = st.columns(2)
-        c1.metric("CUIT Detectado", default_cuit if default_cuit else "???")
-        c2.metric("Monto Ticket", f"${monto_ticket_total:,.2f}")
-        
-        # Determine if we should show manual correction fields
-        scan_incomplete = not default_cuit or monto_ticket_total <= 0
-        
+        # --- KEY METRICS (Always visible if scanned) ---
+        import re
+        cuit_prov_clean = re.sub(r'\D', '', default_cuit)
+        cuit_cli_clean = re.sub(r'\D', '', default_cuit_cliente)
+
+        if cuit_prov_clean and len(cuit_prov_clean) == 11:
+            prov_disp = f"{cuit_prov_clean[:2]}-{cuit_prov_clean[2:10]}-{cuit_prov_clean[10]}"
+        elif cuit_prov_clean:
+            prov_disp = cuit_prov_clean
+        else:
+            prov_disp = "Sin CUIT Proveedor (B/C)"
+
+        if cuit_cli_clean == "30570717630":
+            cli_disp = "30-570717630 (EXPOCONSULT S.A.)"
+        elif cuit_cli_clean and len(cuit_cli_clean) == 11:
+            cli_disp = f"{cuit_cli_clean[:2]}-{cuit_cli_clean[2:10]}-{cuit_cli_clean[10]}"
+        elif cuit_cli_clean:
+            cli_disp = cuit_cli_clean
+        else:
+            cli_disp = "A CONSUMIDOR FINAL"
+
+        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1.metric("CUIT Proveedor", prov_disp)
+        col_m2.metric("Receptor / Cliente", cli_disp)
+        col_m3.metric("Monto Ticket", f"${monto_ticket_total:,.2f}")
+
+        # Determine if we should show manual correction warning (only if total is zero/invalid)
+        scan_incomplete = monto_ticket_total <= 0
         if scan_incomplete:
              st.warning("⚠️ **Escaneo Incompleto o Ilegible.** Por favor complete o corrija los datos manualmente.")
 
@@ -664,7 +686,7 @@ if final_image_bytes or modo_manual:
 
         # CUIT del Cliente
         if "scan_cuit_cliente_input" not in st.session_state:
-            st.session_state.scan_cuit_cliente_input = ""
+            st.session_state.scan_cuit_cliente_input = default_cuit_cliente
         cuit_cliente_input = st.text_input(
             "CUIT del Cliente (Receptor)", key="scan_cuit_cliente_input",
             placeholder="11 dígitos, solo si aparece en el comprobante",
